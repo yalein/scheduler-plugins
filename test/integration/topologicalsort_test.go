@@ -26,9 +26,13 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler"
 	schedapi "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	fwkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
@@ -38,23 +42,28 @@ import (
 	scheconfig "sigs.k8s.io/scheduler-plugins/apis/config"
 	"sigs.k8s.io/scheduler-plugins/pkg/networkaware/topologicalsort"
 	networkawareutil "sigs.k8s.io/scheduler-plugins/pkg/networkaware/util"
+	clientutil "sigs.k8s.io/scheduler-plugins/pkg/util"
 	"sigs.k8s.io/scheduler-plugins/test/util"
 
 	appgroupapi "github.com/diktyo-io/appgroup-api/pkg/apis/appgroup"
 	agv1alpha1 "github.com/diktyo-io/appgroup-api/pkg/apis/appgroup/v1alpha1"
-	agversioned "github.com/diktyo-io/appgroup-api/pkg/generated/clientset/versioned"
 )
 
 func TestTopologicalSortPlugin(t *testing.T) {
 	testCtx := &testContext{}
 	testCtx.Ctx, testCtx.CancelFn = context.WithCancel(context.Background())
 
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(agv1alpha1.AddToScheme(scheme))
+
+	client, _, err := clientutil.NewClientWithCachedReader(testCtx.Ctx, globalKubeConfig, scheme)
+
 	cs := kubernetes.NewForConfigOrDie(globalKubeConfig)
-	extClient := agversioned.NewForConfigOrDie(globalKubeConfig)
 	testCtx.ClientSet = cs
 	testCtx.KubeConfig = globalKubeConfig
 
-	if err := wait.Poll(100*time.Millisecond, 3*time.Second, func() (done bool, err error) {
+	if err := wait.PollUntilContextTimeout(testCtx.Ctx, 100*time.Millisecond, 3*time.Second, false, func(ctx context.Context) (done bool, err error) {
 		groupList, _, err := cs.ServerGroupsAndResources()
 		if err != nil {
 			return false, nil
@@ -134,8 +143,9 @@ func TestTopologicalSortPlugin(t *testing.T) {
 			},
 		},
 	).Status(agv1alpha1.AppGroupStatus{
-		RunningWorkloads:  3,
-		ScheduleStartTime: metav1.Time{time.Now()}, TopologyCalculationTime: metav1.Time{time.Now()},
+		RunningWorkloads:        3,
+		ScheduleStartTime:       metav1.Now(),
+		TopologyCalculationTime: metav1.Now(),
 		TopologyOrder: agv1alpha1.AppGroupTopologyList{
 			agv1alpha1.AppGroupTopologyInfo{
 				Workload: agv1alpha1.AppGroupWorkloadInfo{Kind: "Deployment", Name: "p1", Selector: "p1", APIVersion: "apps/v1", Namespace: "default"}, Index: 1},
@@ -211,8 +221,9 @@ func TestTopologicalSortPlugin(t *testing.T) {
 			},
 		},
 	).Status(agv1alpha1.AppGroupStatus{
-		RunningWorkloads:  3,
-		ScheduleStartTime: metav1.Time{time.Now()}, TopologyCalculationTime: metav1.Time{time.Now()},
+		RunningWorkloads:        3,
+		ScheduleStartTime:       metav1.Now(),
+		TopologyCalculationTime: metav1.Now(),
 		TopologyOrder: agv1alpha1.AppGroupTopologyList{
 			agv1alpha1.AppGroupTopologyInfo{Workload: agv1alpha1.AppGroupWorkloadInfo{Kind: "Deployment", Name: "p1", Selector: "p1", APIVersion: "apps/v1", Namespace: "default"}, Index: 1},
 			agv1alpha1.AppGroupTopologyInfo{Workload: agv1alpha1.AppGroupWorkloadInfo{Kind: "Deployment", Name: "p10", Selector: "p10", APIVersion: "apps/v1", Namespace: "default"}, Index: 2},
@@ -341,12 +352,12 @@ func TestTopologicalSortPlugin(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Logf("Start topologicalSort integration test %v ...", tt.name)
-			defer cleanupAppGroups(testCtx.Ctx, extClient, tt.appGroup)
+			defer cleanupAppGroups(testCtx.Ctx, client, tt.appGroup)
 			defer cleanupPods(t, testCtx, tt.pods)
 
 			// create AppGroup
 			t.Logf("Step 1 - Start by creating the basic appGroup...")
-			if err := createAppGroups(testCtx.Ctx, extClient, tt.appGroup); err != nil {
+			if err := createAppGroups(testCtx.Ctx, client, tt.appGroup); err != nil {
 				t.Fatal(err)
 			}
 
@@ -362,7 +373,7 @@ func TestTopologicalSortPlugin(t *testing.T) {
 
 			// Wait for all Pods are in the scheduling queue.
 			t.Logf("Step 3 -  Wait for pods being in the scheduling queue....")
-			err = wait.Poll(time.Millisecond*200, wait.ForeverTestTimeout, func() (bool, error) {
+			err = wait.PollUntilContextTimeout(testCtx.Ctx, time.Millisecond*200, wait.ForeverTestTimeout, false, func(ctx context.Context) (bool, error) {
 				pendingPods, _ := testCtx.Scheduler.SchedulingQueue.PendingPods()
 				if len(pendingPods) == len(tt.pods) {
 					return true, nil
@@ -375,8 +386,9 @@ func TestTopologicalSortPlugin(t *testing.T) {
 
 			// Expect Pods are popped as in the TopologyOrder defined by the AppGroup.
 			t.Logf("Step 4 -  Expect pods to be popped out according to the topologicalSort plugin...")
+			logger := klog.FromContext(testCtx.Ctx)
 			for i := 0; i < len(tt.podNames); i++ {
-				podInfo := testCtx.Scheduler.NextPod()
+				podInfo, _ := testCtx.Scheduler.NextPod(logger)
 				if podInfo.Pod.Name != tt.podNames[i] {
 					t.Errorf("Expect Pod %q, but got %q", tt.podNames[i], podInfo.Pod.Name)
 				} else {

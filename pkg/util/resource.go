@@ -19,20 +19,20 @@ package util
 import (
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	fwk "k8s.io/kube-scheduler/framework"
 	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
-	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 // ResourceList returns a resource list of this resource.
 // Note: this code used to exist in k/k, but removed in k/k#101465.
-func ResourceList(r *framework.Resource) v1.ResourceList {
+func ResourceList(r fwk.Resource) v1.ResourceList {
 	result := v1.ResourceList{
-		v1.ResourceCPU:              *resource.NewMilliQuantity(r.MilliCPU, resource.DecimalSI),
-		v1.ResourceMemory:           *resource.NewQuantity(r.Memory, resource.BinarySI),
-		v1.ResourcePods:             *resource.NewQuantity(int64(r.AllowedPodNumber), resource.BinarySI),
-		v1.ResourceEphemeralStorage: *resource.NewQuantity(r.EphemeralStorage, resource.BinarySI),
+		v1.ResourceCPU:              *resource.NewMilliQuantity(r.GetMilliCPU(), resource.DecimalSI),
+		v1.ResourceMemory:           *resource.NewQuantity(r.GetMemory(), resource.BinarySI),
+		v1.ResourcePods:             *resource.NewQuantity(int64(r.GetAllowedPodNumber()), resource.BinarySI),
+		v1.ResourceEphemeralStorage: *resource.NewQuantity(r.GetEphemeralStorage(), resource.BinarySI),
 	}
-	for rName, rQuant := range r.ScalarResources {
+	for rName, rQuant := range r.GetScalarResources() {
 		if v1helper.IsHugePageResourceName(rName) {
 			result[rName] = *resource.NewQuantity(rQuant, resource.BinarySI)
 		} else {
@@ -47,6 +47,7 @@ func ResourceList(r *framework.Resource) v1.ResourceList {
 // - the sum of all app containers(spec.Containers) request for a resource.
 // - the effective init containers(spec.InitContainers) request for a resource.
 // The effective init containers request is the highest request on all init containers.
+// Additionally, if the Pod specifies overhead, it will also be included in the final calculation.
 func GetPodEffectiveRequest(pod *v1.Pod) v1.ResourceList {
 	initResources := make(v1.ResourceList)
 	resources := make(v1.ResourceList)
@@ -70,6 +71,13 @@ func GetPodEffectiveRequest(pod *v1.Pod) v1.ResourceList {
 	for name, quantity := range initResources {
 		if q, ok := resources[name]; ok && quantity.Cmp(q) <= 0 {
 			continue
+		}
+		resources[name] = quantity
+	}
+	// Add pod overhead if present
+	for name, quantity := range pod.Spec.Overhead {
+		if q, ok := resources[name]; ok {
+			quantity.Add(q)
 		}
 		resources[name] = quantity
 	}

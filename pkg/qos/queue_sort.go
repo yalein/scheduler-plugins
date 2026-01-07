@@ -17,9 +17,12 @@ limitations under the License.
 package qos
 
 import (
+	"context"
+
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	corev1helpers "k8s.io/component-helpers/scheduling/corev1"
+	fwk "k8s.io/kube-scheduler/framework"
 	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
@@ -39,25 +42,46 @@ func (pl *Sort) Name() string {
 
 // Less is the function used by the activeQ heap algorithm to sort pods.
 // It sorts pods based on their priorities. When the priorities are equal, it uses
-// the Pod QoS classes to break the tie.
-func (*Sort) Less(pInfo1, pInfo2 *framework.QueuedPodInfo) bool {
-	p1 := corev1helpers.PodPriority(pInfo1.Pod)
-	p2 := corev1helpers.PodPriority(pInfo2.Pod)
-	return (p1 > p2) || (p1 == p2 && compQOS(pInfo1.Pod, pInfo2.Pod))
+// the Pod QoS classes to break the tie. If both the priority and QoS class are equal,
+// it uses PodQueueInfo.timestamp to determine the order.
+func (*Sort) Less(pInfo1, pInfo2 fwk.QueuedPodInfo) bool {
+	p1 := corev1helpers.PodPriority(pInfo1.GetPodInfo().GetPod())
+	p2 := corev1helpers.PodPriority(pInfo2.GetPodInfo().GetPod())
+
+	if p1 != p2 {
+		return p1 > p2
+	}
+	qosResult := compQOS(pInfo1.GetPodInfo().GetPod(), pInfo2.GetPodInfo().GetPod())
+	if qosResult != 0 {
+		return qosResult > 0
+	}
+	return pInfo1.GetTimestamp().Before(pInfo2.GetTimestamp())
 }
 
-func compQOS(p1, p2 *v1.Pod) bool {
+// compQOS compares the QoS classes of two Pods and returns:
+//
+//	 1 if p1 has a higher precedence QoS class than p2,
+//	-1 if p2 has a higher precedence QoS class than p1,
+//	 0 if both have the same QoS class.
+func compQOS(p1, p2 *v1.Pod) int {
 	p1QOS, p2QOS := v1qos.GetPodQOS(p1), v1qos.GetPodQOS(p2)
-	if p1QOS == v1.PodQOSGuaranteed {
-		return true
+
+	// Define the precedence order of QoS classes using a map
+	qosOrder := map[v1.PodQOSClass]int{
+		v1.PodQOSBestEffort: 1,
+		v1.PodQOSBurstable:  2,
+		v1.PodQOSGuaranteed: 3,
 	}
-	if p1QOS == v1.PodQOSBurstable {
-		return p2QOS != v1.PodQOSGuaranteed
+
+	if qosOrder[p1QOS] > qosOrder[p2QOS] {
+		return 1
+	} else if qosOrder[p1QOS] < qosOrder[p2QOS] {
+		return -1
 	}
-	return p2QOS == v1.PodQOSBestEffort
+	return 0
 }
 
 // New initializes a new plugin and returns it.
-func New(_ runtime.Object, _ framework.Handle) (framework.Plugin, error) {
+func New(_ context.Context, _ runtime.Object, _ framework.Handle) (framework.Plugin, error) {
 	return &Sort{}, nil
 }

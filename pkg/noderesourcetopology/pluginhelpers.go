@@ -18,22 +18,24 @@ package noderesourcetopology
 
 import (
 	"context"
-	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/klog/v2"
+	k8scache "k8s.io/client-go/tools/cache"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 
+	"github.com/go-logr/logr"
 	topologyv1alpha2 "github.com/k8stopologyawareschedwg/noderesourcetopology-api/pkg/apis/topology/v1alpha2"
-	topoclientset "github.com/k8stopologyawareschedwg/noderesourcetopology-api/pkg/generated/clientset/versioned"
-	topologyinformers "github.com/k8stopologyawareschedwg/noderesourcetopology-api/pkg/generated/informers/externalversions"
+	"github.com/k8stopologyawareschedwg/noderesourcetopology-api/pkg/apis/topology/v1alpha2/helper"
+	"github.com/k8stopologyawareschedwg/noderesourcetopology-api/pkg/apis/topology/v1alpha2/helper/numanode"
+
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiconfig "sigs.k8s.io/scheduler-plugins/apis/config"
 	nrtcache "sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/cache"
+	"sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/logging"
+	"sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/podprovider"
 	"sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/stringify"
 )
 
@@ -41,74 +43,84 @@ const (
 	maxNUMAId = 64
 )
 
-func initNodeTopologyInformer(tcfg *apiconfig.NodeResourceTopologyMatchArgs, handle framework.Handle) (nrtcache.Interface, error) {
-	topoClient, err := topoclientset.NewForConfig(handle.KubeConfig())
+func initNodeTopologyInformer(ctx context.Context, lh logr.Logger,
+	tcfg *apiconfig.NodeResourceTopologyMatchArgs, handle framework.Handle) (nrtcache.Interface, error) {
+	client, err := ctrlclient.NewWithWatch(handle.KubeConfig(), ctrlclient.Options{Scheme: scheme})
 	if err != nil {
-		klog.ErrorS(err, "Cannot create clientset for NodeTopologyResource", "kubeConfig", handle.KubeConfig())
+		lh.Error(err, "cannot create client for NodeTopologyResource", "kubeConfig", handle.KubeConfig())
 		return nil, err
 	}
 
-	topologyInformerFactory := topologyinformers.NewSharedInformerFactory(topoClient, 0)
-	nodeTopologyInformer := topologyInformerFactory.Topology().V1alpha2().NodeResourceTopologies()
-	nodeTopologyLister := nodeTopologyInformer.Lister()
-
-	klog.V(5).InfoS("Start nodeTopologyInformer")
-	ctx := context.Background()
-	topologyInformerFactory.Start(ctx.Done())
-	topologyInformerFactory.WaitForCacheSync(ctx.Done())
-
 	if tcfg.DiscardReservedNodes {
-		return nrtcache.NewDiscardReserved(nodeTopologyLister), nil
+		return nrtcache.NewDiscardReserved(lh.WithName(logging.SubsystemNRTCache), client), nil
 	}
 
 	if tcfg.CacheResyncPeriodSeconds <= 0 {
-		return nrtcache.NewPassthrough(nodeTopologyLister), nil
+		return nrtcache.NewPassthrough(lh.WithName(logging.SubsystemNRTCache), client), nil
 	}
 
-	podSharedInformer := nrtcache.InformerFromHandle(handle)
-	podLister := handle.SharedInformerFactory().Core().V1().Pods().Lister()
+	podSharedInformer, podLister, isPodRelevant := podprovider.NewFromHandle(lh, handle, tcfg.Cache)
 
-	nrtCache, err := nrtcache.NewOverReserve(nodeTopologyLister, podLister)
+	nrtCache, err := nrtcache.NewOverReserve(ctx, lh.WithName(logging.SubsystemNRTCache), tcfg.Cache, client, podLister, isPodRelevant)
 	if err != nil {
 		return nil, err
 	}
 
-	if fwk, ok := handle.(framework.Framework); ok {
-		profileName := fwk.ProfileName()
-		klog.InfoS("setting up foreign pods detection", "name", profileName)
-		nrtcache.RegisterSchedulerProfileName(profileName)
-		nrtcache.SetupForeignPodsDetector(profileName, podSharedInformer, nrtCache)
-	} else {
-		klog.Warningf("cannot determine the scheduler profile names - no foreign pod detection enabled")
-	}
+	initNodeTopologyForeignPodsDetection(lh, tcfg.Cache, handle, podSharedInformer, nrtCache)
 
 	resyncPeriod := time.Duration(tcfg.CacheResyncPeriodSeconds) * time.Second
 	go wait.Forever(nrtCache.Resync, resyncPeriod)
 
-	klog.V(3).InfoS("enable NodeTopology cache (needs the Reserve plugin)", "resyncPeriod", resyncPeriod)
+	lh.V(3).Info("enable NodeTopology cache (needs the Reserve plugin)", "resyncPeriod", resyncPeriod)
 
 	return nrtCache, nil
 }
 
-func createNUMANodeList(zones topologyv1alpha2.ZoneList) NUMANodeList {
+func initNodeTopologyForeignPodsDetection(lh logr.Logger, cfg *apiconfig.NodeResourceTopologyCache, handle framework.Handle, podSharedInformer k8scache.SharedInformer, nrtCache *nrtcache.OverReserve) {
+	foreignPodsDetect := getForeignPodsDetectMode(lh, cfg)
+
+	if foreignPodsDetect == apiconfig.ForeignPodsDetectNone {
+		lh.Info("foreign pods detection disabled by configuration")
+		return
+	}
+	fwk, ok := handle.(framework.Framework)
+	if !ok {
+		lh.Info("cannot determine the scheduler profile names - no foreign pod detection enabled")
+		return
+	}
+
+	profileName := fwk.ProfileName()
+	lh.Info("setting up foreign pods detection", "name", profileName, "mode", foreignPodsDetect)
+
+	if foreignPodsDetect == apiconfig.ForeignPodsDetectOnlyExclusiveResources {
+		nrtcache.TrackOnlyForeignPodsWithExclusiveResources()
+	} else {
+		nrtcache.TrackAllForeignPods()
+	}
+	nrtcache.RegisterSchedulerProfileName(lh.WithName(logging.SubsystemForeignPods), profileName)
+	nrtcache.SetupForeignPodsDetector(lh.WithName(logging.SubsystemForeignPods), profileName, podSharedInformer, nrtCache)
+}
+
+func createNUMANodeList(lh logr.Logger, zones topologyv1alpha2.ZoneList) NUMANodeList {
 	numaIDToZoneIDx := make([]int, maxNUMAId)
 	nodes := NUMANodeList{}
 	// filter non Node zones and create idToIdx lookup array
 	for i, zone := range zones {
-		if zone.Type != "Node" {
+		if zone.Type != helper.ZoneTypeNUMANode {
 			continue
 		}
 
-		numaID, err := getID(zone.Name)
-		if err != nil {
-			klog.Error(err)
+		numaID, err := numanode.NameToID(zone.Name)
+		if err != nil || numaID > maxNUMAId {
+			lh.Error(err, "error getting the numaID", "zone", zone.Name, "numaID", numaID)
 			continue
 		}
 
 		numaIDToZoneIDx[numaID] = i
 
 		resources := extractResources(zone)
-		klog.V(6).InfoS("extracted NUMA resources", stringify.ResourceListToLoggable(zone.Name, resources)...)
+		numaItems := []interface{}{"numaCell", numaID}
+		lh.V(6).Info("extracted NUMA resources", stringify.ResourceListToLoggableWithValues(numaItems, resources)...)
 		nodes = append(nodes, NUMANode{NUMAID: numaID, Resources: resources})
 	}
 
@@ -120,28 +132,6 @@ func createNUMANodeList(zones topologyv1alpha2.ZoneList) NUMANodeList {
 	return nodes
 }
 
-func getID(name string) (int, error) {
-	splitted := strings.Split(name, "-")
-	if len(splitted) != 2 {
-		return -1, fmt.Errorf("invalid zone format zone: %s", name)
-	}
-
-	if splitted[0] != "node" {
-		return -1, fmt.Errorf("invalid zone format zone: %s", name)
-	}
-
-	numaID, err := strconv.Atoi(splitted[1])
-	if err != nil {
-		return -1, fmt.Errorf("invalid zone format zone: %s : %v", name, err)
-	}
-
-	if numaID > maxNUMAId-1 || numaID < 0 {
-		return -1, fmt.Errorf("invalid NUMA id range numaID: %d", numaID)
-	}
-
-	return numaID, nil
-}
-
 func extractCosts(costs topologyv1alpha2.CostList) map[int]int {
 	nodeCosts := make(map[int]int)
 
@@ -151,8 +141,8 @@ func extractCosts(costs topologyv1alpha2.CostList) map[int]int {
 	}
 
 	for _, cost := range costs {
-		numaID, err := getID(cost.Name)
-		if err != nil {
+		numaID, err := numanode.NameToID(cost.Name)
+		if err != nil || numaID > maxNUMAId {
 			continue
 		}
 		nodeCosts[numaID] = int(cost.Value)
@@ -179,4 +169,15 @@ func onlyNonNUMAResources(numaNodes NUMANodeList, resources corev1.ResourceList)
 	}
 
 	return true
+}
+
+func getForeignPodsDetectMode(lh logr.Logger, cfg *apiconfig.NodeResourceTopologyCache) apiconfig.ForeignPodsDetectMode {
+	var foreignPodsDetect apiconfig.ForeignPodsDetectMode
+	if cfg != nil && cfg.ForeignPodsDetect != nil {
+		foreignPodsDetect = *cfg.ForeignPodsDetect
+	} else { // explicitly set to nil?
+		foreignPodsDetect = apiconfig.ForeignPodsDetectAll
+		lh.Info("foreign pods detection value missing", "fallback", foreignPodsDetect)
+	}
+	return foreignPodsDetect
 }

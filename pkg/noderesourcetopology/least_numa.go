@@ -17,15 +17,12 @@ limitations under the License.
 package noderesourcetopology
 
 import (
-	"fmt"
-
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog/v2"
-	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
+	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 
-	topologyv1alpha2 "github.com/k8stopologyawareschedwg/noderesourcetopology-api/pkg/apis/topology/v1alpha2"
+	"github.com/go-logr/logr"
 	"gonum.org/v1/gonum/stat/combin"
 
 	"sigs.k8s.io/scheduler-plugins/pkg/util"
@@ -36,25 +33,21 @@ const (
 	maxDistanceValue = 255
 )
 
-func leastNUMAContainerScopeScore(pod *v1.Pod, zones topologyv1alpha2.ZoneList) (int64, *framework.Status) {
-	nodes := createNUMANodeList(zones)
-	qos := v1qos.GetPodQOS(pod)
-
+func leastNUMAContainerScopeScore(lh logr.Logger, pod *v1.Pod, info *scoreInfo) (int64, *fwk.Status) {
 	maxNUMANodesCount := 0
 	allContainersMinAvgDistance := true
 	// the order how TopologyManager asks for hint is important so doing it in the same order
 	// https://github.com/kubernetes/kubernetes/blob/master/pkg/kubelet/cm/topologymanager/scope_container.go#L52
 	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
 		// if a container requests only non NUMA just continue
-		if onlyNonNUMAResources(nodes, container.Resources.Requests) {
+		if onlyNonNUMAResources(info.numaNodes, container.Resources.Requests) {
 			continue
 		}
-		identifier := fmt.Sprintf("%s/%s/%s", pod.Namespace, pod.Name, container.Name)
-		numaNodes, isMinAvgDistance := numaNodesRequired(identifier, qos, nodes, container.Resources.Requests)
+		numaNodes, isMinAvgDistance := numaNodesRequired(lh, info.qos, info.numaNodes, container.Resources.Requests)
 		// container's resources can't fit onto node, return MinNodeScore for whole pod
 		if numaNodes == nil {
 			// score plugin should be running after resource filter plugin so we should always find sufficient amount of NUMA nodes
-			klog.Warningf("cannot calculate how many NUMA nodes are required for: %s", identifier)
+			lh.Info("cannot calculate how many NUMA nodes are required", "container", container.Name)
 			return framework.MinNodeScore, nil
 		}
 
@@ -68,41 +61,36 @@ func leastNUMAContainerScopeScore(pod *v1.Pod, zones topologyv1alpha2.ZoneList) 
 
 		// subtract the resources requested by the container from the given NUMA.
 		// this is necessary, so we won't allocate the same resources for the upcoming containers
-		subtractFromNUMAs(container.Resources.Requests, nodes, numaNodes.GetBits()...)
+		subtractFromNUMAs(container.Resources.Requests, info.numaNodes, numaNodes.GetBits()...)
 	}
 
 	if maxNUMANodesCount == 0 {
 		return framework.MaxNodeScore, nil
 	}
 
-	return normalizeScore(maxNUMANodesCount, allContainersMinAvgDistance), nil
+	return normalizeScore(maxNUMANodesCount, allContainersMinAvgDistance, info.topologyManager.MaxNUMANodes), nil
 }
 
-func leastNUMAPodScopeScore(pod *v1.Pod, zones topologyv1alpha2.ZoneList) (int64, *framework.Status) {
-	nodes := createNUMANodeList(zones)
-	qos := v1qos.GetPodQOS(pod)
-
-	identifier := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-
+func leastNUMAPodScopeScore(lh logr.Logger, pod *v1.Pod, info *scoreInfo) (int64, *fwk.Status) {
 	resources := util.GetPodEffectiveRequest(pod)
 	// if a pod requests only non NUMA resources return max score
-	if onlyNonNUMAResources(nodes, resources) {
+	if onlyNonNUMAResources(info.numaNodes, resources) {
 		return framework.MaxNodeScore, nil
 	}
 
-	numaNodes, isMinAvgDistance := numaNodesRequired(identifier, qos, nodes, resources)
+	numaNodes, isMinAvgDistance := numaNodesRequired(lh, info.qos, info.numaNodes, resources)
 	// pod's resources can't fit onto node, return MinNodeScore
 	if numaNodes == nil {
 		// score plugin should be running after resource filter plugin so we should always find sufficient amount of NUMA nodes
-		klog.Warningf("cannot calculate how many NUMA nodes are required for: %s", identifier)
+		lh.Info("cannot calculate how many NUMA nodes are required")
 		return framework.MinNodeScore, nil
 	}
 
-	return normalizeScore(numaNodes.Count(), isMinAvgDistance), nil
+	return normalizeScore(numaNodes.Count(), isMinAvgDistance, info.topologyManager.MaxNUMANodes), nil
 }
 
-func normalizeScore(numaNodesCount int, isMinAvgDistance bool) int64 {
-	numaNodeScore := framework.MaxNodeScore / highestNUMAID
+func normalizeScore(numaNodesCount int, isMinAvgDistance bool, highestNUMAID int) int64 {
+	numaNodeScore := framework.MaxNodeScore / int64(highestNUMAID)
 	score := framework.MaxNodeScore - int64(numaNodesCount)*numaNodeScore
 	if isMinAvgDistance {
 		// if distance between NUMA domains is optimal add half of numaNodeScore to make this node more favorable
@@ -112,12 +100,12 @@ func normalizeScore(numaNodesCount int, isMinAvgDistance bool) int64 {
 	return score
 }
 
-func minAvgDistanceInCombinations(numaNodes NUMANodeList, numaNodesCombination [][]int) float32 {
+func minAvgDistanceInCombinations(lh logr.Logger, numaNodes NUMANodeList, numaNodesCombination [][]int) float32 {
 	// max distance for NUMA node
 	var minDistance float32 = maxDistanceValue
 
 	for _, combination := range numaNodesCombination {
-		avgDistance := nodesAvgDistance(numaNodes, combination...)
+		avgDistance := nodesAvgDistance(lh, numaNodes, combination...)
 		if avgDistance < minDistance {
 			minDistance = avgDistance
 		}
@@ -126,7 +114,7 @@ func minAvgDistanceInCombinations(numaNodes NUMANodeList, numaNodesCombination [
 	return minDistance
 }
 
-func nodesAvgDistance(numaNodes NUMANodeList, nodes ...int) float32 {
+func nodesAvgDistance(lh logr.Logger, numaNodes NUMANodeList, nodes ...int) float32 {
 	if len(nodes) == 0 {
 		return maxDistanceValue
 	}
@@ -137,10 +125,10 @@ func nodesAvgDistance(numaNodes NUMANodeList, nodes ...int) float32 {
 
 	for _, node1 := range nodes {
 		for _, node2 := range nodes {
-			cost, ok := numaNodes[node1].Costs[node2]
+			cost, ok := numaNodes[node1].Costs[numaNodes[node2].NUMAID]
 			// we couldn't read Costs assign maxDistanceValue
 			if !ok {
-				klog.Warningf("cannot retrieve Costs information for node : %s", node1)
+				lh.Info("cannot retrieve Costs information", "nodeID", numaNodes[node1].NUMAID)
 				cost = maxDistanceValue
 			}
 			accu += cost
@@ -169,14 +157,16 @@ func combineResources(numaNodes NUMANodeList, combination []int) v1.ResourceList
 // numaNodesRequired returns bitmask with minimal NUMA nodes required to run given resources
 // or nil when resources can't be fitted onto the worker node
 // second value returned is a boolean indicating if bitmask is optimal from distance perspective
-func numaNodesRequired(identifier string, qos v1.PodQOSClass, numaNodes NUMANodeList, resources v1.ResourceList) (bitmask.BitMask, bool) {
+func numaNodesRequired(lh logr.Logger, qos v1.PodQOSClass, numaNodes NUMANodeList, resources v1.ResourceList) (bitmask.BitMask, bool) {
 	for bitmaskLen := 1; bitmaskLen <= len(numaNodes); bitmaskLen++ {
 		numaNodesCombination := combin.Combinations(len(numaNodes), bitmaskLen)
-		suitableCombination, isMinDistance := findSuitableCombination(identifier, qos, numaNodes, resources, numaNodesCombination)
+		suitableCombination, isMinDistance := findSuitableCombination(lh, qos, numaNodes, resources, numaNodesCombination)
 		// we have found suitable combination for given bitmaskLen
 		if suitableCombination != nil {
 			bm := bitmask.NewEmptyBitMask()
-			bm.Add(suitableCombination...)
+			for _, nodeIdx := range suitableCombination {
+				bm.Add(numaNodes[nodeIdx].NUMAID)
+			}
 			return bm, isMinDistance
 		}
 	}
@@ -187,19 +177,22 @@ func numaNodesRequired(identifier string, qos v1.PodQOSClass, numaNodes NUMANode
 // findSuitableCombination returns combination from numaNodesCombination that can fit resources, otherwise return nil
 // second value returned is a boolean indicating if returned combination is optimal from distance perspective
 // this function will always return combination that provides minimal average distance between nodes in combination
-func findSuitableCombination(identifier string, qos v1.PodQOSClass, numaNodes NUMANodeList, resources v1.ResourceList, numaNodesCombination [][]int) ([]int, bool) {
-	minAvgDistance := minAvgDistanceInCombinations(numaNodes, numaNodesCombination)
+func findSuitableCombination(lh logr.Logger, qos v1.PodQOSClass, numaNodes NUMANodeList, resources v1.ResourceList, numaNodesCombination [][]int) ([]int, bool) {
+	minAvgDistance := minAvgDistanceInCombinations(lh, numaNodes, numaNodesCombination)
 	var (
 		minDistanceCombination []int
 		// init as max distance
 		minDistance float32 = 256
 	)
 	for _, combination := range numaNodesCombination {
+		if !isValidCombineResources(numaNodes, resources, combination) {
+			continue
+		}
 		combinationResources := combineResources(numaNodes, combination)
-		resourcesFit := checkResourcesFit(identifier, qos, resources, combinationResources)
+		resourcesFit := checkResourcesFit(lh, qos, resources, combinationResources)
 
 		if resourcesFit {
-			distance := nodesAvgDistance(numaNodes, combination...)
+			distance := nodesAvgDistance(lh, numaNodes, combination...)
 			if distance == minAvgDistance {
 				// return early if we can fit resources into combination and provide minDistance
 				return combination, true
@@ -215,10 +208,10 @@ func findSuitableCombination(identifier string, qos v1.PodQOSClass, numaNodes NU
 	return minDistanceCombination, false
 }
 
-func checkResourcesFit(identifier string, qos v1.PodQOSClass, resources v1.ResourceList, combinationResources v1.ResourceList) bool {
+func checkResourcesFit(lh logr.Logger, qos v1.PodQOSClass, resources v1.ResourceList, combinationResources v1.ResourceList) bool {
 	for resource, quantity := range resources {
 		if quantity.IsZero() {
-			klog.V(4).InfoS("ignoring zero-qty resource request", "identifier", identifier, "resource", resource)
+			lh.V(4).Info("ignoring zero-qty resource request", "resource", resource)
 			continue
 		}
 		if combinationQuantity := combinationResources[resource]; !isResourceSetSuitable(qos, resource, quantity, combinationQuantity) {
@@ -226,5 +219,16 @@ func checkResourcesFit(identifier string, qos v1.PodQOSClass, resources v1.Resou
 		}
 	}
 
+	return true
+}
+
+func isValidCombineResources(numaNodes NUMANodeList, resources v1.ResourceList, combination []int) bool {
+	for _, nodeIndex := range combination {
+		for resourceName := range resources {
+			if _, ok := numaNodes[nodeIndex].Resources[resourceName]; !ok {
+				return false
+			}
+		}
+	}
 	return true
 }

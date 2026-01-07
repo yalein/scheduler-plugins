@@ -23,12 +23,12 @@ import (
 	"testing"
 
 	"k8s.io/apimachinery/pkg/util/sets"
+	fwk "k8s.io/kube-scheduler/framework"
 
 	gocmp "github.com/google/go-cmp/cmp"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	clientsetfake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/events"
@@ -41,7 +41,9 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/tainttoleration"
 	"k8s.io/kubernetes/pkg/scheduler/framework/preemption"
 	frameworkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
+	"k8s.io/kubernetes/pkg/scheduler/metrics"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
+	tf "k8s.io/kubernetes/pkg/scheduler/testing/framework"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -66,7 +68,7 @@ func TestPreFilter(t *testing.T) {
 		name          string
 		podInfos      []podInfo
 		elasticQuotas map[string]*ElasticQuotaInfo
-		expected      []framework.Code
+		expected      []fwk.Code
 	}{
 		{
 			name: "pod subjects to ElasticQuota",
@@ -88,9 +90,9 @@ func TestPreFilter(t *testing.T) {
 					},
 				},
 			},
-			expected: []framework.Code{
-				framework.Success,
-				framework.Unschedulable,
+			expected: []fwk.Code{
+				fwk.Success,
+				fwk.Unschedulable,
 			},
 		},
 		{
@@ -124,8 +126,8 @@ func TestPreFilter(t *testing.T) {
 					},
 				},
 			},
-			expected: []framework.Code{
-				framework.Unschedulable,
+			expected: []fwk.Code{
+				fwk.Unschedulable,
 			},
 		},
 		{
@@ -134,22 +136,25 @@ func TestPreFilter(t *testing.T) {
 				{podName: "ns2-p1", podNamespace: "ns2", memReq: 500},
 			},
 			elasticQuotas: map[string]*ElasticQuotaInfo{},
-			expected: []framework.Code{
-				framework.Success,
+			expected: []fwk.Code{
+				fwk.Success,
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var registerPlugins []st.RegisterPluginFunc
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var registerPlugins []tf.RegisterPluginFunc
 			registeredPlugins := append(
 				registerPlugins,
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			)
 
-			fwk, err := st.NewFramework(
-				registeredPlugins, "", wait.NeverStop,
+			fwk, err := tf.NewFramework(
+				ctx, registeredPlugins, "",
 				frameworkruntime.WithPodNominator(testutil.NewPodNominator(nil)),
 				frameworkruntime.WithSnapshotSharedLister(testutil.NewFakeSharedLister(make([]*v1.Pod, 0), make([]*v1.Node, 0))),
 			)
@@ -171,7 +176,7 @@ func TestPreFilter(t *testing.T) {
 
 			state := framework.NewCycleState()
 			for i := range pods {
-				if _, got := cs.PreFilter(context.TODO(), state, pods[i]); got.Code() != tt.expected[i] {
+				if _, got := cs.PreFilter(context.TODO(), state, pods[i], nil); got.Code() != tt.expected[i] {
 					t.Errorf("expected %v, got %v : %v", tt.expected[i], got.Code(), got.Message())
 				}
 			}
@@ -182,14 +187,14 @@ func TestPreFilter(t *testing.T) {
 func TestPostFilter(t *testing.T) {
 	res := map[v1.ResourceName]string{v1.ResourceMemory: "150"}
 	tests := []struct {
-		name                  string
-		pod                   *v1.Pod
-		existPods             []*v1.Pod
-		nodes                 []*v1.Node
-		filteredNodesStatuses framework.NodeToStatusMap
-		elasticQuotas         map[string]*ElasticQuotaInfo
-		wantResult            *framework.PostFilterResult
-		wantStatus            *framework.Status
+		name                string
+		pod                 *v1.Pod
+		existPods           []*v1.Pod
+		nodes               []*v1.Node
+		filteredNodesReader framework.NodeToStatusReader
+		elasticQuotas       map[string]*ElasticQuotaInfo
+		wantResult          *framework.PostFilterResult
+		wantStatus          *fwk.Status
 	}{
 		{
 			name: "in-namespace preemption",
@@ -202,9 +207,7 @@ func TestPostFilter(t *testing.T) {
 			nodes: []*v1.Node{
 				st.MakeNode().Name("node-a").Capacity(res).Obj(),
 			},
-			filteredNodesStatuses: framework.NodeToStatusMap{
-				"node-a": framework.NewStatus(framework.Unschedulable),
-			},
+			filteredNodesReader: makeUnschedulableNodeStatusReader(),
 			elasticQuotas: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
@@ -232,7 +235,7 @@ func TestPostFilter(t *testing.T) {
 				},
 			},
 			wantResult: framework.NewPostFilterResultWithNominatedNode("node-a"),
-			wantStatus: framework.NewStatus(framework.Success),
+			wantStatus: fwk.NewStatus(fwk.Success),
 		},
 		{
 			name: "cross-namespace preemption",
@@ -245,9 +248,7 @@ func TestPostFilter(t *testing.T) {
 			nodes: []*v1.Node{
 				st.MakeNode().Name("node-a").Capacity(res).Obj(),
 			},
-			filteredNodesStatuses: framework.NodeToStatusMap{
-				"node-a": framework.NewStatus(framework.Unschedulable),
-			},
+			filteredNodesReader: makeUnschedulableNodeStatusReader(),
 			elasticQuotas: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
@@ -275,7 +276,7 @@ func TestPostFilter(t *testing.T) {
 				},
 			},
 			wantResult: framework.NewPostFilterResultWithNominatedNode("node-a"),
-			wantStatus: framework.NewStatus(framework.Success),
+			wantStatus: fwk.NewStatus(fwk.Success),
 		},
 		{
 			name: "without elasticQuotas",
@@ -288,17 +289,18 @@ func TestPostFilter(t *testing.T) {
 			nodes: []*v1.Node{
 				st.MakeNode().Name("node-a").Capacity(res).Obj(),
 			},
-			filteredNodesStatuses: framework.NodeToStatusMap{
-				"node-a": framework.NewStatus(framework.Unschedulable),
-			},
-			elasticQuotas: map[string]*ElasticQuotaInfo{},
-			wantResult:    framework.NewPostFilterResultWithNominatedNode("node-a"),
-			wantStatus:    framework.NewStatus(framework.Success),
+			filteredNodesReader: makeUnschedulableNodeStatusReader(),
+			elasticQuotas:       map[string]*ElasticQuotaInfo{},
+			wantResult:          framework.NewPostFilterResultWithNominatedNode("node-a"),
+			wantStatus:          fwk.NewStatus(fwk.Success),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Initialize scheduler metrics
+			metrics.Register()
+
 			registeredPlugins := makeRegisteredPlugin()
 
 			podItems := []v1.Pod{}
@@ -315,22 +317,23 @@ func TestPostFilter(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			fwk, err := st.NewFramework(
+			fwk, err := tf.NewFramework(
+				ctx,
 				registeredPlugins,
 				"default-scheduler",
-				ctx.Done(),
 				frameworkruntime.WithClientSet(cs),
 				frameworkruntime.WithEventRecorder(&events.FakeRecorder{}),
 				frameworkruntime.WithInformerFactory(informerFactory),
 				frameworkruntime.WithPodNominator(testutil.NewPodNominator(informerFactory.Core().V1().Pods().Lister())),
 				frameworkruntime.WithSnapshotSharedLister(testutil.NewFakeSharedLister(tt.existPods, tt.nodes)),
+				frameworkruntime.WithWaitingPods(frameworkruntime.NewWaitingPodsMap()),
 			)
 			if err != nil {
 				t.Fatal(err)
 			}
 
 			state := framework.NewCycleState()
-			_, preFilterStatus := fwk.RunPreFilterPlugins(ctx, state, tt.pod)
+			_, preFilterStatus, _ := fwk.RunPreFilterPlugins(ctx, state, tt.pod)
 			if !preFilterStatus.IsSuccess() {
 				t.Errorf("Unexpected preFilterStatus: %v", preFilterStatus)
 			}
@@ -353,7 +356,7 @@ func TestPostFilter(t *testing.T) {
 				podLister:         informerFactory.Core().V1().Pods().Lister(),
 				pdbLister:         getPDBLister(informerFactory),
 			}
-			gotResult, gotStatus := c.PostFilter(ctx, state, tt.pod, tt.filteredNodesStatuses)
+			gotResult, gotStatus := c.PostFilter(ctx, state, tt.pod, tt.filteredNodesReader)
 			if diff := gocmp.Diff(tt.wantStatus, gotStatus); diff != "" {
 				t.Errorf("Unexpected status (-want, +got):\n%s", diff)
 			}
@@ -369,7 +372,7 @@ func TestReserve(t *testing.T) {
 		name          string
 		pods          []*v1.Pod
 		elasticQuotas map[string]*ElasticQuotaInfo
-		expectedCodes []framework.Code
+		expectedCodes []fwk.Code
 		expected      []map[string]*ElasticQuotaInfo
 	}{
 		{
@@ -381,7 +384,7 @@ func TestReserve(t *testing.T) {
 			elasticQuotas: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
-					pods:      sets.String{},
+					pods:      sets.Set[string]{},
 					Min: &framework.Resource{
 						Memory: 1000,
 					},
@@ -393,15 +396,15 @@ func TestReserve(t *testing.T) {
 					},
 				},
 			},
-			expectedCodes: []framework.Code{
-				framework.Success,
-				framework.Success,
+			expectedCodes: []fwk.Code{
+				fwk.Success,
+				fwk.Success,
 			},
 			expected: []map[string]*ElasticQuotaInfo{
 				{
 					"ns1": {
 						Namespace: "ns1",
-						pods:      sets.NewString("t1-p1"),
+						pods:      sets.New("t1-p1"),
 						Min: &framework.Resource{
 							Memory: 1000,
 						},
@@ -419,7 +422,7 @@ func TestReserve(t *testing.T) {
 				{
 					"ns1": {
 						Namespace: "ns1",
-						pods:      sets.NewString("t1-p1"),
+						pods:      sets.New("t1-p1"),
 						Min: &framework.Resource{
 							Memory: 1000,
 						},
@@ -439,15 +442,18 @@ func TestReserve(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var registerPlugins []st.RegisterPluginFunc
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var registerPlugins []tf.RegisterPluginFunc
 			registeredPlugins := append(
 				registerPlugins,
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			)
 
-			fwk, err := st.NewFramework(
-				registeredPlugins, "", wait.NeverStop,
+			fwk, err := tf.NewFramework(
+				ctx, registeredPlugins, "",
 				frameworkruntime.WithPodNominator(testutil.NewPodNominator(nil)),
 				frameworkruntime.WithSnapshotSharedLister(testutil.NewFakeSharedLister(make([]*v1.Pod, 0), make([]*v1.Node, 0))),
 			)
@@ -463,7 +469,7 @@ func TestReserve(t *testing.T) {
 
 			state := framework.NewCycleState()
 			for i, pod := range tt.pods {
-				got := cs.Reserve(nil, state, pod, "node-a")
+				got := cs.Reserve(context.TODO(), state, pod, "node-a")
 				if got.Code() != tt.expectedCodes[i] {
 					t.Errorf("expected %v, got %v : %v", tt.expected[i], got.Code(), got.Message())
 				}
@@ -492,7 +498,7 @@ func TestUnreserve(t *testing.T) {
 			elasticQuotas: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
-					pods:      sets.NewString("t1-p3", "t1-p4"),
+					pods:      sets.New("t1-p3", "t1-p4"),
 					Min: &framework.Resource{
 						Memory: 1000,
 					},
@@ -508,7 +514,7 @@ func TestUnreserve(t *testing.T) {
 				{
 					"ns1": {
 						Namespace: "ns1",
-						pods:      sets.NewString("t1-p3", "t1-p4"),
+						pods:      sets.New("t1-p3", "t1-p4"),
 						Min: &framework.Resource{
 							Memory: 1000,
 						},
@@ -523,7 +529,7 @@ func TestUnreserve(t *testing.T) {
 				{
 					"ns1": {
 						Namespace: "ns1",
-						pods:      sets.NewString("t1-p3", "t1-p4"),
+						pods:      sets.New("t1-p3", "t1-p4"),
 						Min: &framework.Resource{
 							Memory: 1000,
 						},
@@ -538,7 +544,7 @@ func TestUnreserve(t *testing.T) {
 				{
 					"ns1": {
 						Namespace: "ns1",
-						pods:      sets.NewString("t1-p4"),
+						pods:      sets.New("t1-p4"),
 						Min: &framework.Resource{
 							Memory: 1000,
 						},
@@ -558,15 +564,18 @@ func TestUnreserve(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var registerPlugins []st.RegisterPluginFunc
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var registerPlugins []tf.RegisterPluginFunc
 			registeredPlugins := append(
 				registerPlugins,
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			)
 
-			fwk, err := st.NewFramework(
-				registeredPlugins, "", wait.NeverStop,
+			fwk, err := tf.NewFramework(
+				ctx, registeredPlugins, "",
 				frameworkruntime.WithPodNominator(testutil.NewPodNominator(nil)),
 				frameworkruntime.WithSnapshotSharedLister(testutil.NewFakeSharedLister(make([]*v1.Pod, 0), make([]*v1.Node, 0))),
 			)
@@ -582,7 +591,7 @@ func TestUnreserve(t *testing.T) {
 
 			state := framework.NewCycleState()
 			for i, pod := range tt.pods {
-				cs.Unreserve(nil, state, pod, "node-a")
+				cs.Unreserve(context.TODO(), state, pod, "node-a")
 				if !reflect.DeepEqual(cs.elasticQuotaInfos["ns1"], tt.expected[i]["ns1"]) {
 					t.Errorf("expected %#v, got %#v", tt.expected[i]["ns1"].Used, cs.elasticQuotaInfos["ns1"].Used)
 				}
@@ -598,7 +607,7 @@ func TestDryRunPreemption(t *testing.T) {
 		pod           *v1.Pod
 		pods          []*v1.Pod
 		nodes         []*v1.Node
-		nodesStatuses framework.NodeToStatusMap
+		nodeReader    framework.NodeToStatusReader
 		elasticQuotas map[string]*ElasticQuotaInfo
 		want          []preemption.Candidate
 	}{
@@ -639,9 +648,7 @@ func TestDryRunPreemption(t *testing.T) {
 					},
 				},
 			},
-			nodesStatuses: framework.NodeToStatusMap{
-				"node-a": framework.NewStatus(framework.Unschedulable),
-			},
+			nodeReader: makeUnschedulableNodeStatusReader(),
 			want: []preemption.Candidate{
 				&candidate{
 					victims: &extenderv1.Victims{
@@ -691,9 +698,7 @@ func TestDryRunPreemption(t *testing.T) {
 					},
 				},
 			},
-			nodesStatuses: framework.NodeToStatusMap{
-				"node-a": framework.NewStatus(framework.Unschedulable),
-			},
+			nodeReader: makeUnschedulableNodeStatusReader(),
 			want: []preemption.Candidate{
 				&candidate{
 					victims: &extenderv1.Victims{
@@ -710,14 +715,18 @@ func TestDryRunPreemption(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Initialize scheduler metrics
+			metrics.Register()
+
 			registeredPlugins := makeRegisteredPlugin()
 
 			cs := clientsetfake.NewSimpleClientset()
-			ctx := context.Background()
-			fwk, err := st.NewFramework(
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			fwk, err := tf.NewFramework(
+				ctx,
 				registeredPlugins,
 				"default-scheduler",
-				ctx.Done(),
 				frameworkruntime.WithClientSet(cs),
 				frameworkruntime.WithEventRecorder(&events.FakeRecorder{}),
 				frameworkruntime.WithPodNominator(testutil.NewPodNominator(nil)),
@@ -731,7 +740,7 @@ func TestDryRunPreemption(t *testing.T) {
 			state := framework.NewCycleState()
 
 			// Some tests rely on PreFilter plugin to compute its CycleState.
-			_, preFilterStatus := fwk.RunPreFilterPlugins(ctx, state, tt.pod)
+			_, preFilterStatus, _ := fwk.RunPreFilterPlugins(ctx, state, tt.pod)
 			if !preFilterStatus.IsSuccess() {
 				t.Errorf("Unexpected preFilterStatus: %v", preFilterStatus)
 			}
@@ -748,20 +757,18 @@ func TestDryRunPreemption(t *testing.T) {
 			state.Write(preFilterStateKey, prefilterState)
 			state.Write(ElasticQuotaSnapshotKey, elasticQuotaSnapshotState)
 
-			pe := preemption.Evaluator{
-				PluginName: Name,
-				Handler:    fwk,
-				PodLister:  fwk.SharedInformerFactory().Core().V1().Pods().Lister(),
-				PdbLister:  getPDBLister(fwk.SharedInformerFactory()),
-				State:      state,
-				Interface: &preemptor{
+			pe := preemption.NewEvaluator(
+				Name,
+				fwk,
+				&preemptor{
 					fh:    fwk,
 					state: state,
 				},
-			}
+				false, // enableAsyncPreemption
+			)
 
 			nodeInfos, _ := fwk.SnapshotSharedLister().NodeInfos().List()
-			got, _, err := pe.DryRunPreemption(ctx, tt.pod, nodeInfos, nil, 0, int32(len(nodeInfos)))
+			got, _, err := pe.DryRunPreemption(ctx, state, tt.pod, nodeInfos, nil, 0, int32(len(nodeInfos)))
 			if err != nil {
 				t.Fatalf("unexpected error during DryRunPreemption(): %v", err)
 			}
@@ -799,7 +806,7 @@ func TestPodEligibleToPreemptOthers(t *testing.T) {
 		pod                 *v1.Pod
 		existPods           []*v1.Pod
 		nodes               []*v1.Node
-		nominatedNodeStatus *framework.Status
+		nominatedNodeStatus *fwk.Status
 		elasticQuotas       map[string]*ElasticQuotaInfo
 		expected            bool
 	}{
@@ -810,7 +817,7 @@ func TestPodEligibleToPreemptOthers(t *testing.T) {
 			nodes: []*v1.Node{
 				st.MakeNode().Name("node-a").Capacity(res).Obj(),
 			},
-			nominatedNodeStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, tainttoleration.ErrReasonNotMatch),
+			nominatedNodeStatus: fwk.NewStatus(fwk.UnschedulableAndUnresolvable, tainttoleration.ErrReasonNotMatch),
 			elasticQuotas: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
@@ -834,7 +841,7 @@ func TestPodEligibleToPreemptOthers(t *testing.T) {
 			nodes: []*v1.Node{
 				st.MakeNode().Name("node-a").Capacity(res).Obj(),
 			},
-			nominatedNodeStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, tainttoleration.ErrReasonNotMatch),
+			nominatedNodeStatus: fwk.NewStatus(fwk.UnschedulableAndUnresolvable, tainttoleration.ErrReasonNotMatch),
 			elasticQuotas: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
@@ -958,14 +965,17 @@ func TestPodEligibleToPreemptOthers(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Initialize scheduler metrics
+			metrics.Register()
 			registeredPlugins := makeRegisteredPlugin()
 			cs := clientsetfake.NewSimpleClientset()
-			ctx := context.Background()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-			fwk, err := st.NewFramework(
+			fwk, err := tf.NewFramework(
+				ctx,
 				registeredPlugins,
 				"default-scheduler",
-				ctx.Done(),
 				frameworkruntime.WithClientSet(cs),
 				frameworkruntime.WithEventRecorder(&events.FakeRecorder{}),
 				frameworkruntime.WithPodNominator(testutil.NewPodNominator(nil)),
@@ -977,7 +987,7 @@ func TestPodEligibleToPreemptOthers(t *testing.T) {
 			}
 
 			state := framework.NewCycleState()
-			_, preFilterStatus := fwk.RunPreFilterPlugins(ctx, state, tt.pod)
+			_, preFilterStatus, _ := fwk.RunPreFilterPlugins(ctx, state, tt.pod)
 			if !preFilterStatus.IsSuccess() {
 				t.Errorf("Unexpected preFilterStatus: %v", preFilterStatus)
 			}
@@ -995,7 +1005,7 @@ func TestPodEligibleToPreemptOthers(t *testing.T) {
 			state.Write(ElasticQuotaSnapshotKey, elasticQuotaSnapshotState)
 
 			p := preemptor{fh: fwk, state: state}
-			if got, _ := p.PodEligibleToPreemptOthers(tt.pod, tt.nominatedNodeStatus); got != tt.expected {
+			if got, _ := p.PodEligibleToPreemptOthers(ctx, tt.pod, tt.nominatedNodeStatus); got != tt.expected {
 				t.Errorf("expected %t, got %t for pod: %s", tt.expected, got, tt.pod.Name)
 			}
 		})
@@ -1018,7 +1028,7 @@ func TestAddElasticQuota(t *testing.T) {
 			expected: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
-					pods:      sets.String{},
+					pods:      sets.Set[string]{},
 					Max: &framework.Resource{
 						MilliCPU: 100,
 						Memory:   1000,
@@ -1043,7 +1053,7 @@ func TestAddElasticQuota(t *testing.T) {
 			expected: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
-					pods:      sets.String{},
+					pods:      sets.Set[string]{},
 					Max: &framework.Resource{
 						MilliCPU:         UpperBoundOfMax,
 						Memory:           UpperBoundOfMax,
@@ -1069,7 +1079,7 @@ func TestAddElasticQuota(t *testing.T) {
 			expected: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
-					pods:      sets.String{},
+					pods:      sets.Set[string]{},
 					Max: &framework.Resource{
 						MilliCPU: 100,
 						Memory:   1000,
@@ -1095,7 +1105,7 @@ func TestAddElasticQuota(t *testing.T) {
 			expected: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
-					pods:      sets.String{},
+					pods:      sets.Set[string]{},
 					Max: &framework.Resource{
 						MilliCPU:         UpperBoundOfMax,
 						Memory:           UpperBoundOfMax,
@@ -1116,15 +1126,18 @@ func TestAddElasticQuota(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var registerPlugins []st.RegisterPluginFunc
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var registerPlugins []tf.RegisterPluginFunc
 			registeredPlugins := append(
 				registerPlugins,
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			)
 
-			fwk, err := st.NewFramework(
-				registeredPlugins, "", wait.NeverStop,
+			fwk, err := tf.NewFramework(
+				ctx, registeredPlugins, "",
 				frameworkruntime.WithPodNominator(testutil.NewPodNominator(nil)),
 				frameworkruntime.WithSnapshotSharedLister(testutil.NewFakeSharedLister(make([]*v1.Pod, 0), make([]*v1.Node, 0))),
 			)
@@ -1167,7 +1180,7 @@ func TestUpdateElasticQuota(t *testing.T) {
 			expected: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
-					pods:      sets.String{},
+					pods:      sets.Set[string]{},
 					Max: &framework.Resource{
 						MilliCPU: 300,
 						Memory:   1000,
@@ -1186,15 +1199,18 @@ func TestUpdateElasticQuota(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var registerPlugins []st.RegisterPluginFunc
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var registerPlugins []tf.RegisterPluginFunc
 			registeredPlugins := append(
 				registerPlugins,
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			)
 
-			fwk, err := st.NewFramework(
-				registeredPlugins, "", wait.NeverStop,
+			fwk, err := tf.NewFramework(
+				ctx, registeredPlugins, "",
 				frameworkruntime.WithPodNominator(testutil.NewPodNominator(nil)),
 				frameworkruntime.WithSnapshotSharedLister(testutil.NewFakeSharedLister(make([]*v1.Pod, 0), make([]*v1.Node, 0))),
 			)
@@ -1235,15 +1251,18 @@ func TestDeleteElasticQuota(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var registerPlugins []st.RegisterPluginFunc
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var registerPlugins []tf.RegisterPluginFunc
 			registeredPlugins := append(
 				registerPlugins,
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			)
 
-			fwk, err := st.NewFramework(
-				registeredPlugins, "", wait.NeverStop,
+			fwk, err := tf.NewFramework(
+				ctx, registeredPlugins, "",
 				frameworkruntime.WithPodNominator(testutil.NewPodNominator(nil)),
 				frameworkruntime.WithSnapshotSharedLister(testutil.NewFakeSharedLister(make([]*v1.Pod, 0), make([]*v1.Node, 0))),
 			)
@@ -1288,7 +1307,7 @@ func TestAddPod(t *testing.T) {
 			expected: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
-					pods:      sets.NewString("t1-p1", "t1-p2", "t1-p3"),
+					pods:      sets.New("t1-p1", "t1-p2", "t1-p3"),
 					Max: &framework.Resource{
 						MilliCPU: 100,
 						Memory:   1000,
@@ -1310,15 +1329,18 @@ func TestAddPod(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var registerPlugins []st.RegisterPluginFunc
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var registerPlugins []tf.RegisterPluginFunc
 			registeredPlugins := append(
 				registerPlugins,
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			)
 
-			fwk, err := st.NewFramework(
-				registeredPlugins, "", wait.NeverStop,
+			fwk, err := tf.NewFramework(
+				ctx, registeredPlugins, "",
 				frameworkruntime.WithPodNominator(testutil.NewPodNominator(nil)),
 				frameworkruntime.WithSnapshotSharedLister(testutil.NewFakeSharedLister(make([]*v1.Pod, 0), make([]*v1.Node, 0))),
 			)
@@ -1365,7 +1387,7 @@ func TestUpdatePod(t *testing.T) {
 			expected: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
-					pods:      sets.NewString("t1-p1"),
+					pods:      sets.New("t1-p1"),
 					Max: &framework.Resource{
 						MilliCPU: 100,
 						Memory:   1000,
@@ -1397,7 +1419,7 @@ func TestUpdatePod(t *testing.T) {
 			expected: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
-					pods:      sets.String{},
+					pods:      sets.Set[string]{},
 					Max: &framework.Resource{
 						MilliCPU: 100,
 						Memory:   1000,
@@ -1419,15 +1441,18 @@ func TestUpdatePod(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var registerPlugins []st.RegisterPluginFunc
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var registerPlugins []tf.RegisterPluginFunc
 			registeredPlugins := append(
 				registerPlugins,
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			)
 
-			fwk, err := st.NewFramework(
-				registeredPlugins, "", wait.NeverStop,
+			fwk, err := tf.NewFramework(
+				ctx, registeredPlugins, "",
 				frameworkruntime.WithPodNominator(testutil.NewPodNominator(nil)),
 				frameworkruntime.WithSnapshotSharedLister(testutil.NewFakeSharedLister(make([]*v1.Pod, 0), make([]*v1.Node, 0))),
 			)
@@ -1478,7 +1503,7 @@ func TestDeletePod(t *testing.T) {
 			expected: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
-					pods:      sets.NewString(),
+					pods:      sets.New[string](),
 					Max: &framework.Resource{
 						MilliCPU: 100,
 						Memory:   1000,
@@ -1511,7 +1536,7 @@ func TestDeletePod(t *testing.T) {
 			expected: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
-					pods:      sets.NewString("t1-p2"),
+					pods:      sets.New("t1-p2"),
 					Max: &framework.Resource{
 						MilliCPU: 100,
 						Memory:   1000,
@@ -1533,15 +1558,18 @@ func TestDeletePod(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var registerPlugins []st.RegisterPluginFunc
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var registerPlugins []tf.RegisterPluginFunc
 			registeredPlugins := append(
 				registerPlugins,
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			)
 
-			fwk, err := st.NewFramework(
-				registeredPlugins, "", wait.NeverStop,
+			fwk, err := tf.NewFramework(
+				ctx, registeredPlugins, "",
 				frameworkruntime.WithPodNominator(testutil.NewPodNominator(nil)),
 				frameworkruntime.WithSnapshotSharedLister(testutil.NewFakeSharedLister(make([]*v1.Pod, 0), make([]*v1.Node, 0))),
 			)
@@ -1568,6 +1596,12 @@ func TestDeletePod(t *testing.T) {
 			}
 		})
 	}
+}
+
+func makeUnschedulableNodeStatusReader() *framework.NodeToStatus {
+	nodeStatusReader := framework.NewDefaultNodeToStatus()
+	nodeStatusReader.Set("node-a", fwk.NewStatus(fwk.Unschedulable))
+	return nodeStatusReader
 }
 
 func makePod(podName string, namespace string, memReq int64, cpuReq int64, gpuReq int64, priority int32, uid string, nodeName string) *v1.Pod {
@@ -1609,12 +1643,12 @@ func makeResourceList(cpu, mem int64) v1.ResourceList {
 	}
 }
 
-func makeRegisteredPlugin() []st.RegisterPluginFunc {
-	registeredPlugins := []st.RegisterPluginFunc{
-		st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-		st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-		st.RegisterPluginAsExtensions(noderesources.Name, func(plArgs apiruntime.Object, fh framework.Handle) (framework.Plugin, error) {
-			return noderesources.NewFit(plArgs, fh, plfeature.Features{})
+func makeRegisteredPlugin() []tf.RegisterPluginFunc {
+	registeredPlugins := []tf.RegisterPluginFunc{
+		tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+		tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+		tf.RegisterPluginAsExtensions(noderesources.Name, func(ctx context.Context, plArgs apiruntime.Object, fh framework.Handle) (framework.Plugin, error) {
+			return noderesources.NewFit(ctx, plArgs, fh, plfeature.Features{})
 		}, "Filter", "PreFilter"),
 	}
 	return registeredPlugins

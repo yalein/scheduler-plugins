@@ -22,50 +22,54 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	clientsetfake "k8s.io/client-go/kubernetes/fake"
+	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/ktesting"
+	fwk "k8s.io/kube-scheduler/framework"
+
 	"k8s.io/kubernetes/pkg/scheduler/framework"
-	fakeframework "k8s.io/kubernetes/pkg/scheduler/framework/fake"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultbinder"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/queuesort"
 	frameworkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
-	st "k8s.io/kubernetes/pkg/scheduler/testing"
+	"k8s.io/kubernetes/pkg/scheduler/metrics"
+	tf "k8s.io/kubernetes/pkg/scheduler/testing/framework"
+
 	testutil "sigs.k8s.io/scheduler-plugins/test/util"
 )
 
 func TestPodState(t *testing.T) {
 	tests := []struct {
-		nodeInfos    []*framework.NodeInfo
+		nodeInfos    []fwk.NodeInfo
 		wantErr      string
 		expectedList framework.NodeScoreList
 		name         string
 	}{
 		{
-			nodeInfos:    []*framework.NodeInfo{makeNodeInfo("node1", 6, 0, 10), makeNodeInfo("node2", 3, 0, 10), makeNodeInfo("node3", 0, 0, 10)},
+			nodeInfos:    []fwk.NodeInfo{makeNodeInfo("node1", 6, 0, 10), makeNodeInfo("node2", 3, 0, 10), makeNodeInfo("node3", 0, 0, 10)},
 			expectedList: []framework.NodeScore{{Name: "node1", Score: framework.MaxNodeScore}, {Name: "node2", Score: 50}, {Name: "node3", Score: framework.MinNodeScore}},
 			name:         "node has more terminating pods will be scored with higher score, node has regular pods only will be scored with the lowest score.",
 		},
 		{
-			nodeInfos:    []*framework.NodeInfo{makeNodeInfo("node1", 0, 2, 10), makeNodeInfo("node2", 0, 1, 10), makeNodeInfo("node3", 0, 0, 10)},
+			nodeInfos:    []fwk.NodeInfo{makeNodeInfo("node1", 0, 2, 10), makeNodeInfo("node2", 0, 1, 10), makeNodeInfo("node3", 0, 0, 10)},
 			expectedList: []framework.NodeScore{{Name: "node1", Score: framework.MinNodeScore}, {Name: "node2", Score: 50}, {Name: "node3", Score: framework.MaxNodeScore}},
 			name:         "node has more nominated pods will be scored with lower score, node has regular pods only will be scored with the highest score.",
 		},
 		{
-			nodeInfos:    []*framework.NodeInfo{makeNodeInfo("node1", 5, 2, 10), makeNodeInfo("node2", 3, 1, 10)},
+			nodeInfos:    []fwk.NodeInfo{makeNodeInfo("node1", 5, 2, 10), makeNodeInfo("node2", 3, 1, 10)},
 			expectedList: []framework.NodeScore{{Name: "node1", Score: framework.MaxNodeScore}, {Name: "node2", Score: framework.MinNodeScore}},
 			name:         "node has more (terminatingPodNumber - nominatedPodNumber) will be scored with higher score",
 		},
 		{
-			nodeInfos:    []*framework.NodeInfo{makeNodeInfo("node1", 5, 4, 10), makeNodeInfo("node2", 3, 1, 10)},
+			nodeInfos:    []fwk.NodeInfo{makeNodeInfo("node1", 5, 4, 10), makeNodeInfo("node2", 3, 1, 10)},
 			expectedList: []framework.NodeScore{{Name: "node1", Score: framework.MinNodeScore}, {Name: "node2", Score: framework.MaxNodeScore}},
 			name:         "node has less (terminatingPodNumber - nominatedPodNumber) will be scored with lower score",
 		},
 		{
-			nodeInfos:    []*framework.NodeInfo{makeNodeInfo("node1", 5, 0, 10), makeNodeInfo("node2", 3, 1, 10), makeNodeInfo("node3", 2, 1, 10), makeNodeInfo("node4", 0, 1, 10)},
+			nodeInfos:    []fwk.NodeInfo{makeNodeInfo("node1", 5, 0, 10), makeNodeInfo("node2", 3, 1, 10), makeNodeInfo("node3", 2, 1, 10), makeNodeInfo("node4", 0, 1, 10)},
 			expectedList: []framework.NodeScore{{Name: "node1", Score: framework.MaxNodeScore}, {Name: "node2", Score: 50}, {Name: "node3", Score: 33}, {Name: "node4", Score: framework.MinNodeScore}},
 			name:         "node has more (terminatingPodNumber - nominatedPodNumber) will be scored with higher score",
 		},
@@ -73,19 +77,23 @@ func TestPodState(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			cs := clientsetfake.NewSimpleClientset()
+			// Initialize scheduler metrics
+			metrics.Register()
+			logger, ctx := ktesting.NewTestContext(t)
+
+			cs := clientsetfake.NewClientset()
 			informerFactory := informers.NewSharedInformerFactory(cs, 0)
-			registeredPlugins := []st.RegisterPluginFunc{
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterPluginAsExtensions(Name, New, "Score"),
+			registeredPlugins := []tf.RegisterPluginFunc{
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterScorePlugin(Name, New, 1),
 			}
 			fakeSharedLister := &fakeSharedLister{nodes: test.nodeInfos}
 
-			fh, err := st.NewFramework(
+			fh, err := tf.NewFramework(
+				ctx,
 				registeredPlugins,
 				"default-scheduler",
-				wait.NeverStop,
 				frameworkruntime.WithClientSet(cs),
 				frameworkruntime.WithInformerFactory(informerFactory),
 				frameworkruntime.WithSnapshotSharedLister(fakeSharedLister),
@@ -96,17 +104,17 @@ func TestPodState(t *testing.T) {
 			}
 			// initialize nominated pod by adding nominated pods into nominatedPodMap
 			for _, n := range test.nodeInfos {
-				for _, pi := range n.Pods {
-					if pi.Pod.Status.NominatedNodeName != "" {
-						addNominatedPod(pi, n.Node().Name, fh)
+				for _, pi := range n.GetPods() {
+					if pi.GetPod().Status.NominatedNodeName != "" {
+						addNominatedPod(logger, pi, n.Node().Name, fh)
 					}
 				}
 			}
-			pe, _ := New(nil, fh)
+			pe, _ := New(nil, nil, fh)
 			var gotList framework.NodeScoreList
 			plugin := pe.(framework.ScorePlugin)
 			for i, n := range test.nodeInfos {
-				score, err := plugin.Score(context.Background(), nil, nil, n.Node().Name)
+				score, err := plugin.Score(context.Background(), nil, nil, n)
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)
 				}
@@ -183,15 +191,15 @@ func makeRegularPod(name string) *v1.Pod {
 	}
 }
 
-func addNominatedPod(pi *framework.PodInfo, nodeName string, fh framework.Handle) *framework.PodInfo {
-	fh.AddNominatedPod(pi, &framework.NominatingInfo{NominatingMode: framework.ModeOverride, NominatedNodeName: nodeName})
+func addNominatedPod(logger klog.Logger, pi fwk.PodInfo, nodeName string, fh framework.Handle) fwk.PodInfo {
+	fh.AddNominatedPod(logger, pi, &framework.NominatingInfo{NominatingMode: framework.ModeOverride, NominatedNodeName: nodeName})
 	return pi
 }
 
 var _ framework.SharedLister = &fakeSharedLister{}
 
 type fakeSharedLister struct {
-	nodes []*framework.NodeInfo
+	nodes []fwk.NodeInfo
 }
 
 func (f *fakeSharedLister) StorageInfos() framework.StorageInfoLister {
@@ -199,5 +207,5 @@ func (f *fakeSharedLister) StorageInfos() framework.StorageInfoLister {
 }
 
 func (f *fakeSharedLister) NodeInfos() framework.NodeInfoLister {
-	return fakeframework.NodeInfoLister(f.nodes)
+	return tf.NodeInfoLister(f.nodes)
 }

@@ -30,6 +30,8 @@ type CoschedulingArgs struct {
 
 	// PermitWaitingTimeSeconds is the waiting timeout in seconds.
 	PermitWaitingTimeSeconds int64
+	// PodGroupBackoffSeconds is the backoff time in seconds before a pod group can be scheduled again.
+	PodGroupBackoffSeconds int64
 }
 
 // ModeType is a "string" type.
@@ -118,6 +120,20 @@ type LoadVariationRiskBalancingArgs struct {
 	SafeVarianceSensitivity float64
 }
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+// LowRiskOverCommitmentArgs holds arguments used to configure LowRiskOverCommitment plugin.
+type LowRiskOverCommitmentArgs struct {
+	metav1.TypeMeta
+
+	// Common parameters for trimaran plugins
+	TrimaranSpec
+	// The number of windows over which usage data metrics are smoothed
+	SmoothingWindowSize int64
+	// Resources fractional weight of risk due to limits specification [0,1]
+	RiskLimitWeights map[v1.ResourceName]float64
+}
+
 // ScoringStrategyType is a "string" type.
 type ScoringStrategyType string
 
@@ -142,6 +158,69 @@ type ScoringStrategy struct {
 	Resources []schedconfig.ResourceSpec
 }
 
+// ForeignPodsDetectMode is a "string" type.
+type ForeignPodsDetectMode string
+
+const (
+	ForeignPodsDetectNone                   ForeignPodsDetectMode = "None"
+	ForeignPodsDetectAll                    ForeignPodsDetectMode = "All"
+	ForeignPodsDetectOnlyExclusiveResources ForeignPodsDetectMode = "OnlyExclusiveResources"
+)
+
+// CacheResyncMethod is a "string" type.
+type CacheResyncMethod string
+
+const (
+	CacheResyncAutodetect             CacheResyncMethod = "Autodetect"
+	CacheResyncAll                    CacheResyncMethod = "All"
+	CacheResyncOnlyExclusiveResources CacheResyncMethod = "OnlyExclusiveResources"
+)
+
+// CacheInformerMode is a "string" type
+type CacheInformerMode string
+
+const (
+	CacheInformerShared    CacheInformerMode = "Shared"
+	CacheInformerDedicated CacheInformerMode = "Dedicated"
+)
+
+// CacheResyncScope is a "string" type
+type CacheResyncScope string
+
+const (
+	CacheResyncScopeAll           CacheResyncScope = "All"
+	CacheResyncScopeOnlyResources CacheResyncScope = "OnlyResources"
+)
+
+// NodeResourceTopologyCache define configuration details for the NodeResourceTopology cache.
+type NodeResourceTopologyCache struct {
+	// ForeignPodsDetect sets how foreign pods should be handled.
+	// Foreign pods are pods detected running on nodes managed by a NodeResourceTopologyMatch-enabled
+	// scheduler, but not scheduled by this scheduler instance, likely because this is running as
+	// secondary scheduler. To make sure the cache is consistent, foreign pods need to be handled.
+	// Has no effect if caching is disabled (CacheResyncPeriod is zero) or
+	// if DiscardReservedNodes is enabled. If unspecified, default is "All".
+	ForeignPodsDetect *ForeignPodsDetectMode
+	// ResyncMethod sets how the resync behaves to compute the expected node state.
+	// "All" consider all pods to compute the node state. "OnlyExclusiveResources" consider
+	// only pods regardless of their QoS which have exclusive resources assigned to their
+	// containers (CPUs, devices...).
+	// Has no effect if caching is disabled (CacheResyncPeriod is zero) or if DiscardReservedNodes
+	// is enabled. "Autodetect" is the default, reads hint from NRT objects. Fallback is "All".
+	ResyncMethod *CacheResyncMethod
+	// InformerMode controls the channel the cache uses to get updates about pods.
+	// "Shared" uses the default settings; "Dedicated" creates a specific subscription which is
+	// guaranteed to best suit the cache needs, at cost of one extra connection.
+	// If unspecified, default is "Dedicated"
+	InformerMode *CacheInformerMode
+	// ResyncScope controls which changes the resync logic monitors to trigger an update.
+	// "All" consider both Attributes (metadata, node config details) and per-NUMA resources,
+	// while "OnlyResources" consider only per-NUMA resource values. The default is
+	// "All" to make the code react to node config changes avoiding reboots.
+	// Use "OnlyResources" to restore the previous behavior.
+	ResyncScope *CacheResyncScope
+}
+
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // NodeResourceTopologyMatchArgs holds arguments used to configure the NodeResourceTopologyMatch plugin
@@ -156,6 +235,8 @@ type NodeResourceTopologyMatchArgs struct {
 	// this option takes precedence over CacheResyncPeriodSeconds
 	// if DiscardReservedNodes is enabled, CacheResyncPeriodSeconds option is noop
 	DiscardReservedNodes bool
+	// Cache enables to fine tune the caching behavior
+	Cache *NodeResourceTopologyCache
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -185,4 +266,35 @@ type NetworkOverheadArgs struct {
 
 	// The NetworkTopology CRD name
 	NetworkTopologyName string
+}
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+type SySchedArgs struct {
+	metav1.TypeMeta
+
+	// CR namespace of the default profile for all system calls
+	DefaultProfileNamespace string
+
+	// CR name of the default profile for all system calls
+	DefaultProfileName string
+}
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+// PeaksArgs holds arguments used to configure the Peaks plugin
+type PeaksArgs struct {
+	metav1.TypeMeta
+
+	// Address of load watcher service
+	WatcherAddress string
+	NodePowerModel map[string]PowerModel // Node power model where key is node name and value is power model
+}
+
+type PowerModel struct {
+	K0 float64 `json:"k0"`
+	K1 float64 `json:"k1"`
+	K2 float64 `json:"k2"`
+	// Power = K0 + K1 * e ^(K2 * x) : where x is utilisation
+	// Idle power of node will be K0 + K1
 }

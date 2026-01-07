@@ -39,10 +39,11 @@ import (
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
 
 	agv1alpha1 "github.com/diktyo-io/appgroup-api/pkg/apis/appgroup/v1alpha1"
-	agversioned "github.com/diktyo-io/appgroup-api/pkg/generated/clientset/versioned"
 	ntv1alpha1 "github.com/diktyo-io/networktopology-api/pkg/apis/networktopology/v1alpha1"
-	ntversioned "github.com/diktyo-io/networktopology-api/pkg/generated/clientset/versioned"
+
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+
 	"sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
 )
 
@@ -51,11 +52,11 @@ var lowPriority, midPriority, highPriority = int32(0), int32(100), int32(1000)
 var signalHandler = ctrl.SetupSignalHandler()
 
 // podScheduled returns true if a node is assigned to the given pod.
-func podScheduled(c clientset.Interface, podNamespace, podName string) bool {
+func podScheduled(t *testing.T, c clientset.Interface, podNamespace, podName string) bool {
 	pod, err := c.CoreV1().Pods(podNamespace).Get(context.TODO(), podName, metav1.GetOptions{})
 	if err != nil {
 		// This could be a connection error so we want to retry.
-		klog.ErrorS(err, "Failed to get pod", "pod", klog.KRef(podNamespace, podName))
+		t.Logf("Failed to get pod %s: %s", klog.KRef(podNamespace, podName), err)
 		return false
 	}
 	return pod.Spec.NodeName != ""
@@ -185,11 +186,11 @@ func initTestSchedulerWithOptions(t *testing.T, testCtx *testContext, opts ...sc
 
 	opts = append(opts, scheduler.WithKubeConfig(testCtx.KubeConfig))
 	testCtx.Scheduler, err = scheduler.New(
+		testCtx.Ctx,
 		testCtx.ClientSet,
 		testCtx.InformerFactory,
 		testCtx.DynInformerFactory,
 		profile.NewRecorderFactory(eventBroadcaster),
-		testCtx.Ctx.Done(),
 		opts...,
 	)
 
@@ -197,8 +198,7 @@ func initTestSchedulerWithOptions(t *testing.T, testCtx *testContext, opts ...sc
 		t.Fatalf("Couldn't create scheduler: %v", err)
 	}
 
-	stopCh := make(chan struct{})
-	eventBroadcaster.StartRecordingToSink(stopCh)
+	eventBroadcaster.StartRecordingToSink(testCtx.Ctx.Done())
 
 	return testCtx
 }
@@ -226,16 +226,16 @@ func cleanupPods(t *testing.T, testCtx *testContext, pods []*v1.Pod) {
 		}
 	}
 	for _, p := range pods {
-		if err := wait.Poll(time.Millisecond, wait.ForeverTestTimeout,
+		if err := wait.PollUntilContextTimeout(testCtx.Ctx, time.Millisecond, wait.ForeverTestTimeout, false,
 			podDeleted(testCtx.ClientSet, p.Namespace, p.Name)); err != nil {
 			t.Errorf("error while waiting for pod  %s/%s to get deleted: %v", p.Namespace, p.Name, err)
 		}
 	}
 }
 
-func podDeleted(c clientset.Interface, podNamespace, podName string) wait.ConditionFunc {
-	return func() (bool, error) {
-		_, err := c.CoreV1().Pods(podNamespace).Get(context.TODO(), podName, metav1.GetOptions{})
+func podDeleted(c clientset.Interface, podNamespace, podName string) wait.ConditionWithContextFunc {
+	return func(ctx context.Context) (bool, error) {
+		_, err := c.CoreV1().Pods(podNamespace).Get(ctx, podName, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			return true, nil
 		}
@@ -260,9 +260,9 @@ func createNamespace(t *testing.T, testCtx *testContext, ns string) {
 	}
 }
 
-func createAppGroups(ctx context.Context, client agversioned.Interface, appGroups []*agv1alpha1.AppGroup) error {
+func createAppGroups(ctx context.Context, client ctrlclient.Client, appGroups []*agv1alpha1.AppGroup) error {
 	for _, ag := range appGroups {
-		_, err := client.AppgroupV1alpha1().AppGroups(ag.Namespace).Create(ctx, ag, metav1.CreateOptions{})
+		err := client.Create(ctx, ag.DeepCopy())
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return err
 		}
@@ -270,15 +270,15 @@ func createAppGroups(ctx context.Context, client agversioned.Interface, appGroup
 	return nil
 }
 
-func cleanupAppGroups(ctx context.Context, client agversioned.Interface, appGroups []*agv1alpha1.AppGroup) {
+func cleanupAppGroups(ctx context.Context, client ctrlclient.Client, appGroups []*agv1alpha1.AppGroup) {
 	for _, ag := range appGroups {
-		client.AppgroupV1alpha1().AppGroups(ag.Namespace).Delete(ctx, ag.Name, metav1.DeleteOptions{})
+		client.Delete(ctx, ag)
 	}
 }
 
-func createNetworkTopologies(ctx context.Context, client ntversioned.Interface, networkTopologies []*ntv1alpha1.NetworkTopology) error {
+func createNetworkTopologies(ctx context.Context, client ctrlclient.Client, networkTopologies []*ntv1alpha1.NetworkTopology) error {
 	for _, nt := range networkTopologies {
-		_, err := client.NetworktopologyV1alpha1().NetworkTopologies(nt.Namespace).Create(ctx, nt, metav1.CreateOptions{})
+		err := client.Create(ctx, nt.DeepCopy())
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return err
 		}
@@ -286,9 +286,9 @@ func createNetworkTopologies(ctx context.Context, client ntversioned.Interface, 
 	return nil
 }
 
-func cleanupNetworkTopologies(ctx context.Context, client ntversioned.Interface, networkTopologies []*ntv1alpha1.NetworkTopology) {
+func cleanupNetworkTopologies(ctx context.Context, client ctrlclient.Client, networkTopologies []*ntv1alpha1.NetworkTopology) {
 	for _, nt := range networkTopologies {
-		client.NetworktopologyV1alpha1().NetworkTopologies(nt.Namespace).Delete(ctx, nt.Name, metav1.DeleteOptions{})
+		client.Delete(ctx, nt)
 	}
 }
 

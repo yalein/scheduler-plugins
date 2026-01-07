@@ -27,22 +27,25 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	testClientSet "k8s.io/client-go/kubernetes/fake"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/util/workqueue"
+	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultbinder"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/queuesort"
-	"k8s.io/kubernetes/pkg/scheduler/framework/runtime"
+	schedruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
+	tf "k8s.io/kubernetes/pkg/scheduler/testing/framework"
+
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	agv1alpha1 "github.com/diktyo-io/appgroup-api/pkg/apis/appgroup/v1alpha1"
-	agfake "github.com/diktyo-io/appgroup-api/pkg/generated/clientset/versioned/fake"
-	aginformers "github.com/diktyo-io/appgroup-api/pkg/generated/informers/externalversions"
 	ntv1alpha1 "github.com/diktyo-io/networktopology-api/pkg/apis/networktopology/v1alpha1"
-	ntfake "github.com/diktyo-io/networktopology-api/pkg/generated/clientset/versioned/fake"
-	ntinformers "github.com/diktyo-io/networktopology-api/pkg/generated/informers/externalversions"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -50,8 +53,8 @@ var _ framework.SharedLister = &testSharedLister{}
 
 type testSharedLister struct {
 	nodes       []*v1.Node
-	nodeInfos   []*framework.NodeInfo
-	nodeInfoMap map[string]*framework.NodeInfo
+	nodeInfos   []fwk.NodeInfo
+	nodeInfoMap map[string]fwk.NodeInfo
 }
 
 func (f *testSharedLister) StorageInfos() framework.StorageInfoLister {
@@ -62,19 +65,19 @@ func (f *testSharedLister) NodeInfos() framework.NodeInfoLister {
 	return f
 }
 
-func (f *testSharedLister) List() ([]*framework.NodeInfo, error) {
+func (f *testSharedLister) List() ([]fwk.NodeInfo, error) {
 	return f.nodeInfos, nil
 }
 
-func (f *testSharedLister) HavePodsWithAffinityList() ([]*framework.NodeInfo, error) {
+func (f *testSharedLister) HavePodsWithAffinityList() ([]fwk.NodeInfo, error) {
 	return nil, nil
 }
 
-func (f *testSharedLister) HavePodsWithRequiredAntiAffinityList() ([]*framework.NodeInfo, error) {
+func (f *testSharedLister) HavePodsWithRequiredAntiAffinityList() ([]fwk.NodeInfo, error) {
 	return nil, nil
 }
 
-func (f *testSharedLister) Get(nodeName string) (*framework.NodeInfo, error) {
+func (f *testSharedLister) Get(nodeName string) (fwk.NodeInfo, error) {
 	return f.nodeInfoMap[nodeName], nil
 }
 
@@ -185,7 +188,11 @@ func GetNetworkTopologyCR() *ntv1alpha1.NetworkTopology {
 func GetNetworkTopologyCRBasic() *ntv1alpha1.NetworkTopology {
 	// Return NetworkTopology CR (basic version): nt-test
 	return &ntv1alpha1.NetworkTopology{
-		ObjectMeta: metav1.ObjectMeta{Name: "nt-test", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "nt-test",
+			Namespace: "default",
+			UID:       types.UID("fake-uid"),
+		},
 		Spec: ntv1alpha1.NetworkTopologySpec{
 			Weights: ntv1alpha1.WeightList{
 				ntv1alpha1.WeightInfo{Name: "UserDefined",
@@ -280,8 +287,8 @@ func GetAppGroupCROnlineBoutique() *agv1alpha1.AppGroup {
 			},
 		},
 		Status: agv1alpha1.AppGroupStatus{
-			ScheduleStartTime:       metav1.Time{time.Now()},
-			TopologyCalculationTime: metav1.Time{time.Now()},
+			ScheduleStartTime:       metav1.Now(),
+			TopologyCalculationTime: metav1.Now(),
 			TopologyOrder: agv1alpha1.AppGroupTopologyList{
 				agv1alpha1.AppGroupTopologyInfo{Workload: agv1alpha1.AppGroupWorkloadInfo{Kind: "Deployment", Name: "p1-deployment", Selector: "p1", APIVersion: "apps/v1", Namespace: "default"}, Index: 1},
 				agv1alpha1.AppGroupTopologyInfo{Workload: agv1alpha1.AppGroupWorkloadInfo{Kind: "Deployment", Name: "p10-deployment", Selector: "p10", APIVersion: "apps/v1", Namespace: "default"}, Index: 2},
@@ -302,7 +309,11 @@ func GetAppGroupCROnlineBoutique() *agv1alpha1.AppGroup {
 func GetAppGroupCRBasic() *agv1alpha1.AppGroup {
 	// Return AppGroup CRD: basic
 	return &agv1alpha1.AppGroup{
-		ObjectMeta: metav1.ObjectMeta{Name: "basic", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "basic",
+			Namespace: "default",
+			UID:       types.UID("fake-uid"),
+		},
 		Spec: agv1alpha1.AppGroupSpec{
 			NumMembers:               3,
 			TopologySortingAlgorithm: "KahnSort",
@@ -320,8 +331,9 @@ func GetAppGroupCRBasic() *agv1alpha1.AppGroup {
 			},
 		},
 		Status: agv1alpha1.AppGroupStatus{
-			RunningWorkloads:  3,
-			ScheduleStartTime: metav1.Time{time.Now()}, TopologyCalculationTime: metav1.Time{time.Now()},
+			RunningWorkloads:        3,
+			ScheduleStartTime:       metav1.Now(),
+			TopologyCalculationTime: metav1.Now(),
 			TopologyOrder: agv1alpha1.AppGroupTopologyList{
 				agv1alpha1.AppGroupTopologyInfo{
 					Workload: agv1alpha1.AppGroupWorkloadInfo{Kind: "Deployment", Name: "p1-deployment", Selector: "p1", APIVersion: "apps/v1", Namespace: "default"}, Index: 1},
@@ -369,7 +381,7 @@ func BenchmarkNetworkOverheadPreFilter(b *testing.B) {
 		networkTopology *ntv1alpha1.NetworkTopology
 		pod             *v1.Pod
 		pods            []*v1.Pod
-		expected        framework.Code
+		expected        fwk.Code
 	}{
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 10 nodes, 1 pod to allocate",
@@ -382,7 +394,7 @@ func BenchmarkNetworkOverheadPreFilter(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 100 nodes, 1 pod to allocate",
@@ -395,7 +407,7 @@ func BenchmarkNetworkOverheadPreFilter(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 500 nodes, 1 pod to allocate",
@@ -408,7 +420,7 @@ func BenchmarkNetworkOverheadPreFilter(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 1000 nodes, 1 pod to allocate",
@@ -421,7 +433,7 @@ func BenchmarkNetworkOverheadPreFilter(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 2000 nodes, 1 pod to allocate",
@@ -434,7 +446,7 @@ func BenchmarkNetworkOverheadPreFilter(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 3000 nodes, 1 pod to allocate",
@@ -447,7 +459,7 @@ func BenchmarkNetworkOverheadPreFilter(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 5000 nodes, 1 pod to allocate",
@@ -460,7 +472,7 @@ func BenchmarkNetworkOverheadPreFilter(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 10000 nodes, 1 pod to allocate",
@@ -473,18 +485,15 @@ func BenchmarkNetworkOverheadPreFilter(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 	}
 
 	for _, tt := range tests {
 		b.Run(tt.name, func(b *testing.B) {
-			// init listers
-			agClient := agfake.NewSimpleClientset()
-			ntClient := ntfake.NewSimpleClientset()
-
-			fakeAgInformer := aginformers.NewSharedInformerFactory(agClient, 0).Appgroup().V1alpha1().AppGroups()
-			fakeNTInformer := ntinformers.NewSharedInformerFactory(ntClient, 0).Networktopology().V1alpha1().NetworkTopologies()
+			s := clientgoscheme.Scheme
+			utilruntime.Must(agv1alpha1.AddToScheme(s))
+			utilruntime.Must(ntv1alpha1.AddToScheme(s))
 
 			// init nodes
 			nodes := getNodes(tt.nodesNum, tt.regionNames, tt.zoneNames)
@@ -492,23 +501,27 @@ func BenchmarkNetworkOverheadPreFilter(b *testing.B) {
 			// Create dependencies
 			tt.appGroup.Status.RunningWorkloads = tt.dependenciesNum
 
-			// add CRDs
-			agLister := fakeAgInformer.Lister()
-			ntLister := fakeNTInformer.Lister()
-
-			_ = fakeAgInformer.Informer().GetStore().Add(tt.appGroup)
-			_ = fakeNTInformer.Informer().GetStore().Add(tt.networkTopology)
+			cs := testClientSet.NewSimpleClientset()
+			informerFactory := informers.NewSharedInformerFactory(cs, 0)
+			builder := fake.NewClientBuilder().
+				WithScheme(s).
+				WithObjects(tt.appGroup, tt.networkTopology).
+				WithStatusSubresource(&agv1alpha1.AppGroup{}).
+				WithStatusSubresource(&ntv1alpha1.NetworkTopology{})
+			for _, p := range tt.pods {
+				builder.WithObjects(p.DeepCopy())
+			}
+			client := builder.Build()
 
 			// create plugin
-			ctx := context.Background()
-			cs := testClientSet.NewSimpleClientset()
-
-			informerFactory := informers.NewSharedInformerFactory(cs, 0)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
 			snapshot := newTestSharedLister(nil, nodes)
 
 			podInformer := informerFactory.Core().V1().Pods()
 			podLister := podInformer.Lister()
+
 			informerFactory.Start(ctx.Done())
 
 			for _, p := range tt.pods {
@@ -518,19 +531,18 @@ func BenchmarkNetworkOverheadPreFilter(b *testing.B) {
 				}
 			}
 
-			registeredPlugins := []st.RegisterPluginFunc{
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+			registeredPlugins := []tf.RegisterPluginFunc{
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
 			}
 
-			fh, _ := st.NewFramework(registeredPlugins, "default-scheduler", ctx.Done(), runtime.WithClientSet(cs),
-				runtime.WithInformerFactory(informerFactory), runtime.WithSnapshotSharedLister(snapshot))
+			fh, _ := tf.NewFramework(ctx, registeredPlugins, "default-scheduler", schedruntime.WithClientSet(cs),
+				schedruntime.WithInformerFactory(informerFactory), schedruntime.WithSnapshotSharedLister(snapshot))
 
 			pl := &NetworkOverhead{
-				handle:      fh,
-				agLister:    agLister,
+				Client:      client,
 				podLister:   podLister,
-				ntLister:    ntLister,
+				handle:      fh,
 				namespaces:  []string{"default"},
 				weightsName: "UserDefined",
 				ntName:      "nt-test",
@@ -539,7 +551,7 @@ func BenchmarkNetworkOverheadPreFilter(b *testing.B) {
 			state := framework.NewCycleState()
 
 			// Wait for the pods to be scheduled.
-			if err := wait.Poll(1*time.Second, 20*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(ctx, 1*time.Second, 20*time.Second, false, func(ctx context.Context) (bool, error) {
 				return true, nil
 			}); err != nil {
 				b.Errorf("pods not scheduled yet: %v ", err)
@@ -548,7 +560,7 @@ func BenchmarkNetworkOverheadPreFilter(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				// Prefilter
-				if _, got := pl.PreFilter(context.TODO(), state, tt.pod); got.Code() != tt.expected {
+				if _, got := pl.PreFilter(context.TODO(), state, tt.pod, nil); got.Code() != tt.expected {
 					b.Errorf("expected %v, got %v : %v", tt.expected, got.Code(), got.Message())
 					assert.True(b, got.IsSuccess())
 				}
@@ -593,11 +605,11 @@ func TestNetworkOverheadScore(t *testing.T) {
 		networkTopology    *ntv1alpha1.NetworkTopology
 		nodes              []*v1.Node
 		pod                *v1.Pod
-		want               *framework.Status
+		want               *fwk.Status
 		wantedScoresBefore framework.NodeScoreList
 		wantedScoresAfter  framework.NodeScoreList
 		nodeToScore        *v1.Node
-		expected           framework.Code
+		expected           fwk.Code
 	}{
 		{
 			name:            "AppGroup: basic, p1 to allocate, 8 nodes to score",
@@ -633,7 +645,7 @@ func TestNetworkOverheadScore(t *testing.T) {
 				framework.NodeScore{Name: nodes[6].Name, Score: 50},
 				framework.NodeScore{Name: nodes[7].Name, Score: 50},
 			},
-			expected: framework.Success,
+			expected: fwk.Success,
 		},
 		{
 			name:            "AppGroup: basic, p2 to allocate, 8 nodes to score",
@@ -668,7 +680,7 @@ func TestNetworkOverheadScore(t *testing.T) {
 				framework.NodeScore{Name: nodes[6].Name, Score: 0},
 				framework.NodeScore{Name: nodes[7].Name, Score: 0},
 			},
-			expected: framework.Success,
+			expected: fwk.Success,
 		},
 		{
 			name:            "AppGroup: basic, p3 to allocate, no dependency, 8 nodes to score",
@@ -703,34 +715,33 @@ func TestNetworkOverheadScore(t *testing.T) {
 				framework.NodeScore{Name: nodes[6].Name, Score: 0},
 				framework.NodeScore{Name: nodes[7].Name, Score: 0},
 			},
-			expected: framework.Success,
+			expected: fwk.Success,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// init listers
-			agClient := agfake.NewSimpleClientset()
-			ntClient := ntfake.NewSimpleClientset()
-
-			fakeAgInformer := aginformers.NewSharedInformerFactory(agClient, 0).Appgroup().V1alpha1().AppGroups()
-			fakeNTInformer := ntinformers.NewSharedInformerFactory(ntClient, 0).Networktopology().V1alpha1().NetworkTopologies()
-
-			// add CRDs
-			_ = fakeAgInformer.Informer().GetStore().Add(tt.appGroup)
-			_ = fakeNTInformer.Informer().GetStore().Add(tt.networkTopology)
-
-			agLister := fakeAgInformer.Lister()
-			ntLister := fakeNTInformer.Lister()
+			s := clientgoscheme.Scheme
+			utilruntime.Must(agv1alpha1.AddToScheme(s))
+			utilruntime.Must(ntv1alpha1.AddToScheme(s))
 
 			ctx := context.Background()
 			cs := testClientSet.NewSimpleClientset()
+			builder := fake.NewClientBuilder().
+				WithScheme(s).
+				WithObjects(tt.appGroup, tt.networkTopology).
+				WithStatusSubresource(&agv1alpha1.AppGroup{}).
+				WithStatusSubresource(&ntv1alpha1.NetworkTopology{})
+			for _, p := range tt.pods {
+				builder.WithObjects(p.DeepCopy())
+			}
+			client := builder.Build()
 
 			informerFactory := informers.NewSharedInformerFactory(cs, 0)
-
 			snapshot := newTestSharedLister(nil, tt.nodes)
 
 			podInformer := informerFactory.Core().V1().Pods()
 			podLister := podInformer.Lister()
+
 			informerFactory.Start(ctx.Done())
 
 			for _, p := range tt.pods {
@@ -740,26 +751,25 @@ func TestNetworkOverheadScore(t *testing.T) {
 				}
 			}
 
-			registeredPlugins := []st.RegisterPluginFunc{
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+			registeredPlugins := []tf.RegisterPluginFunc{
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
 			}
 
-			fh, _ := st.NewFramework(registeredPlugins, "default-scheduler", ctx.Done(), runtime.WithClientSet(cs),
-				runtime.WithInformerFactory(informerFactory), runtime.WithSnapshotSharedLister(snapshot))
+			fh, _ := tf.NewFramework(ctx, registeredPlugins, "default-scheduler", schedruntime.WithClientSet(cs),
+				schedruntime.WithInformerFactory(informerFactory), schedruntime.WithSnapshotSharedLister(snapshot))
 
 			pl := &NetworkOverhead{
-				handle:      fh,
-				agLister:    agLister,
+				Client:      client,
 				podLister:   podLister,
-				ntLister:    ntLister,
+				handle:      fh,
 				namespaces:  []string{"default"},
 				weightsName: "UserDefined",
 				ntName:      "nt-test",
 			}
 
 			// Wait for the pods to be scheduled.
-			if err := wait.Poll(1*time.Second, 20*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(ctx, 1*time.Second, 20*time.Second, false, func(ctx context.Context) (bool, error) {
 				return true, nil
 			}); err != nil {
 				t.Errorf("pods not scheduled yet: %v ", err)
@@ -770,15 +780,17 @@ func TestNetworkOverheadScore(t *testing.T) {
 
 			for _, n := range nodes {
 				// Prefilter
-				if _, got := pl.PreFilter(context.TODO(), state, tt.pod); got.Code() != tt.expected {
+				if _, got := pl.PreFilter(ctx, state, tt.pod, nil); got.Code() != tt.expected {
 					t.Errorf("expected %v, got %v : %v", tt.expected, got.Code(), got.Message())
 				}
 
 				// Score
+				nodeInfo := framework.NewNodeInfo()
+				nodeInfo.SetNode(n)
 				score, gotStatus := pl.Score(
 					ctx,
 					state,
-					tt.pod, n.Name)
+					tt.pod, nodeInfo)
 				t.Logf("Workload: %v; Node: %v; score: %v; status: %v; message: %v \n", tt.pod.Name, n.Name, score, gotStatus.Code().String(), gotStatus.Message())
 
 				nodeScore := framework.NodeScore{
@@ -840,7 +852,7 @@ func BenchmarkNetworkOverheadScore(b *testing.B) {
 		networkTopology *ntv1alpha1.NetworkTopology
 		pod             *v1.Pod
 		pods            []*v1.Pod
-		expected        framework.Code
+		expected        fwk.Code
 	}{
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 10 nodes, 1 pod to allocate",
@@ -853,7 +865,7 @@ func BenchmarkNetworkOverheadScore(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 100 nodes, 1 pod to allocate",
@@ -866,7 +878,7 @@ func BenchmarkNetworkOverheadScore(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 500 nodes, 1 pod to allocate",
@@ -879,7 +891,7 @@ func BenchmarkNetworkOverheadScore(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 1000 nodes, 1 pod to allocate",
@@ -892,7 +904,7 @@ func BenchmarkNetworkOverheadScore(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 2000 nodes, 1 pod to allocate",
@@ -905,7 +917,7 @@ func BenchmarkNetworkOverheadScore(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 3000 nodes, 1 pod to allocate",
@@ -918,7 +930,7 @@ func BenchmarkNetworkOverheadScore(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 5000 nodes, 1 pod to allocate",
@@ -931,7 +943,7 @@ func BenchmarkNetworkOverheadScore(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 10000 nodes, 1 pod to allocate",
@@ -944,18 +956,15 @@ func BenchmarkNetworkOverheadScore(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 	}
 
 	for _, tt := range tests {
 		b.Run(tt.name, func(b *testing.B) {
-			// init listers
-			agClient := agfake.NewSimpleClientset()
-			ntClient := ntfake.NewSimpleClientset()
-
-			fakeAgInformer := aginformers.NewSharedInformerFactory(agClient, 0).Appgroup().V1alpha1().AppGroups()
-			fakeNTInformer := ntinformers.NewSharedInformerFactory(ntClient, 0).Networktopology().V1alpha1().NetworkTopologies()
+			s := clientgoscheme.Scheme
+			utilruntime.Must(agv1alpha1.AddToScheme(s))
+			utilruntime.Must(ntv1alpha1.AddToScheme(s))
 
 			// init nodes
 			nodes := getNodes(tt.nodesNum, tt.regionNames, tt.zoneNames)
@@ -963,23 +972,25 @@ func BenchmarkNetworkOverheadScore(b *testing.B) {
 			// Create dependencies
 			tt.appGroup.Status.RunningWorkloads = tt.dependenciesNum
 
-			// add CRDs
-			agLister := fakeAgInformer.Lister()
-			ntLister := fakeNTInformer.Lister()
-
-			_ = fakeAgInformer.Informer().GetStore().Add(tt.appGroup)
-			_ = fakeNTInformer.Informer().GetStore().Add(tt.networkTopology)
-
 			// create plugin
 			ctx := context.Background()
 			cs := testClientSet.NewSimpleClientset()
+			builder := fake.NewClientBuilder().
+				WithScheme(s).
+				WithStatusSubresource(&agv1alpha1.AppGroup{}).
+				WithStatusSubresource(&ntv1alpha1.NetworkTopology{}).
+				WithObjects(tt.appGroup, tt.networkTopology)
+			for _, p := range tt.pods {
+				builder.WithObjects(p.DeepCopy())
+			}
+			client := builder.Build()
 
 			informerFactory := informers.NewSharedInformerFactory(cs, 0)
 
 			snapshot := newTestSharedLister(nil, nodes)
-
 			podInformer := informerFactory.Core().V1().Pods()
 			podLister := podInformer.Lister()
+
 			informerFactory.Start(ctx.Done())
 
 			for _, p := range tt.pods {
@@ -989,19 +1000,18 @@ func BenchmarkNetworkOverheadScore(b *testing.B) {
 				}
 			}
 
-			registeredPlugins := []st.RegisterPluginFunc{
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+			registeredPlugins := []tf.RegisterPluginFunc{
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
 			}
 
-			fh, _ := st.NewFramework(registeredPlugins, "default-scheduler", ctx.Done(), runtime.WithClientSet(cs),
-				runtime.WithInformerFactory(informerFactory), runtime.WithSnapshotSharedLister(snapshot))
+			fh, _ := tf.NewFramework(ctx, registeredPlugins, "default-scheduler", schedruntime.WithClientSet(cs),
+				schedruntime.WithInformerFactory(informerFactory), schedruntime.WithSnapshotSharedLister(snapshot))
 
 			pl := &NetworkOverhead{
-				handle:      fh,
-				agLister:    agLister,
+				Client:      client,
 				podLister:   podLister,
-				ntLister:    ntLister,
+				handle:      fh,
 				namespaces:  []string{"default"},
 				weightsName: "UserDefined",
 				ntName:      "nt-test",
@@ -1010,14 +1020,14 @@ func BenchmarkNetworkOverheadScore(b *testing.B) {
 			state := framework.NewCycleState()
 
 			// Wait for the pods to be scheduled.
-			if err := wait.Poll(1*time.Second, 20*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(ctx, 1*time.Second, 20*time.Second, false, func(ctx context.Context) (bool, error) {
 				return true, nil
 			}); err != nil {
 				b.Errorf("pods not scheduled yet: %v ", err)
 			}
 
 			// Prefilter
-			if _, got := pl.PreFilter(context.TODO(), state, tt.pod); got.Code() != tt.expected {
+			if _, got := pl.PreFilter(context.TODO(), state, tt.pod, nil); got.Code() != tt.expected {
 				b.Errorf("expected %v, got %v : %v", tt.expected, got.Code(), got.Message())
 			}
 
@@ -1028,7 +1038,9 @@ func BenchmarkNetworkOverheadScore(b *testing.B) {
 
 				scoreNode := func(i int) {
 					n := nodes[i]
-					score, _ := pl.Score(ctx, state, tt.pod, n.Name)
+					nodeInfo := framework.NewNodeInfo()
+					nodeInfo.SetNode(n)
+					score, _ := pl.Score(ctx, state, tt.pod, nodeInfo)
 					gotList[i] = framework.NodeScore{Name: n.Name, Score: score}
 				}
 				Until(ctx, len(nodes), scoreNode)
@@ -1083,8 +1095,8 @@ func TestNetworkOverheadFilter(t *testing.T) {
 		pods            []*v1.Pod
 		nodes           []*v1.Node
 		nodeToFilter    *v1.Node
-		wantStatus      *framework.Status
-		expected        framework.Code
+		wantStatus      *fwk.Status
+		expected        fwk.Code
 	}{
 		{
 			name:            "AppGroup: basic, p1 to allocate, n-1 to filter: n-1 does not meet network requirements",
@@ -1093,10 +1105,10 @@ func TestNetworkOverheadFilter(t *testing.T) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "basic", nil, nil),
 			nodes:           nodes,
-			wantStatus:      framework.NewStatus(framework.Unschedulable, "Node n-1 does not meet several network requirements from Workload dependencies: Satisfied: 0 Violated: 1"),
+			wantStatus:      fwk.NewStatus(fwk.Unschedulable, "Node n-1 does not meet several network requirements from Workload dependencies: Satisfied: 0 Violated: 1"),
 			nodeToFilter:    nodes[0],
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: basic, p1 to allocate, n-6 to filter: n-6 meets network requirements",
@@ -1108,7 +1120,7 @@ func TestNetworkOverheadFilter(t *testing.T) {
 			wantStatus:      nil,
 			nodeToFilter:    nodes[5],
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: basic, p2 to allocate, n-5 to filter: n-5 does not meet network requirements",
@@ -1117,10 +1129,10 @@ func TestNetworkOverheadFilter(t *testing.T) {
 			networkTopology: networkTopology,
 			pod:             makePod("p2", "p2-deployment", 0, "basic", nil, nil),
 			nodes:           nodes,
-			wantStatus:      framework.NewStatus(framework.Unschedulable, "Node n-5 does not meet several network requirements from Workload dependencies: Satisfied: 0 Violated: 1"),
+			wantStatus:      fwk.NewStatus(fwk.Unschedulable, "Node n-5 does not meet several network requirements from Workload dependencies: Satisfied: 0 Violated: 1"),
 			nodeToFilter:    nodes[4],
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: basic, p2 to allocate, n-7 to filter: n-7 meets network requirements",
@@ -1132,7 +1144,7 @@ func TestNetworkOverheadFilter(t *testing.T) {
 			wantStatus:      nil,
 			nodeToFilter:    nodes[6],
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: basic, p3 to allocate, no dependencies, n-1 to filter: n-1 meets network requirements",
@@ -1144,7 +1156,7 @@ func TestNetworkOverheadFilter(t *testing.T) {
 			wantStatus:      nil,
 			nodeToFilter:    nodes[0],
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: basic, p10 to allocate, different AppGroup, n-1 to filter: n-1 meets network requirements",
@@ -1156,7 +1168,7 @@ func TestNetworkOverheadFilter(t *testing.T) {
 			wantStatus:      nil,
 			nodeToFilter:    nodes[0],
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: basic, p1 to allocate, n-1 to filter, multiple dependencies: n-1 does not meet network requirements",
@@ -1165,10 +1177,10 @@ func TestNetworkOverheadFilter(t *testing.T) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "basic", nil, nil),
 			nodes:           nodes,
-			wantStatus:      framework.NewStatus(framework.Unschedulable, "Node n-1 does not meet several network requirements from Workload dependencies: Satisfied: 0 Violated: 1"),
+			wantStatus:      fwk.NewStatus(fwk.Unschedulable, "Node n-1 does not meet several network requirements from Workload dependencies: Satisfied: 0 Violated: 1"),
 			nodeToFilter:    nodes[0],
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: basic, p1 to allocate, n-6 to filter, multiple dependencies: n-6 meets network requirements",
@@ -1180,28 +1192,28 @@ func TestNetworkOverheadFilter(t *testing.T) {
 			wantStatus:      nil,
 			nodeToFilter:    nodes[5],
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// init listers
-			agClient := agfake.NewSimpleClientset()
-			ntClient := ntfake.NewSimpleClientset()
-
-			fakeAgInformer := aginformers.NewSharedInformerFactory(agClient, 0).Appgroup().V1alpha1().AppGroups()
-			fakeNTInformer := ntinformers.NewSharedInformerFactory(ntClient, 0).Networktopology().V1alpha1().NetworkTopologies()
-
-			// add CRDs
-			fakeAgInformer.Informer().GetStore().Add(tt.appGroup)
-			fakeNTInformer.Informer().GetStore().Add(tt.networkTopology)
-
-			agLister := fakeAgInformer.Lister()
-			ntLister := fakeNTInformer.Lister()
+			s := clientgoscheme.Scheme
+			utilruntime.Must(agv1alpha1.AddToScheme(s))
+			utilruntime.Must(ntv1alpha1.AddToScheme(s))
 
 			// create plugin
 			ctx := context.Background()
 			cs := testClientSet.NewSimpleClientset()
+
+			builder := fake.NewClientBuilder().
+				WithScheme(s).
+				WithStatusSubresource(&agv1alpha1.AppGroup{}).
+				WithStatusSubresource(&ntv1alpha1.NetworkTopology{}).
+				WithObjects(tt.appGroup, tt.networkTopology)
+			for _, p := range tt.pods {
+				builder.WithObjects(p.DeepCopy())
+			}
+			client := builder.Build()
 
 			informerFactory := informers.NewSharedInformerFactory(cs, 0)
 
@@ -1209,6 +1221,7 @@ func TestNetworkOverheadFilter(t *testing.T) {
 
 			podInformer := informerFactory.Core().V1().Pods()
 			podLister := podInformer.Lister()
+
 			informerFactory.Start(ctx.Done())
 
 			for _, p := range tt.pods {
@@ -1218,26 +1231,27 @@ func TestNetworkOverheadFilter(t *testing.T) {
 				}
 			}
 
-			registeredPlugins := []st.RegisterPluginFunc{
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+			registeredPlugins := []tf.RegisterPluginFunc{
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
 			}
 
-			fh, _ := st.NewFramework(registeredPlugins, "default-scheduler", ctx.Done(), runtime.WithClientSet(cs),
-				runtime.WithInformerFactory(informerFactory), runtime.WithSnapshotSharedLister(snapshot))
+			fh, _ := tf.NewFramework(ctx, registeredPlugins, "default-scheduler",
+				schedruntime.WithClientSet(cs),
+				schedruntime.WithInformerFactory(informerFactory),
+				schedruntime.WithSnapshotSharedLister(snapshot))
 
 			pl := &NetworkOverhead{
-				handle:      fh,
-				agLister:    agLister,
+				Client:      client,
 				podLister:   podLister,
-				ntLister:    ntLister,
+				handle:      fh,
 				namespaces:  []string{"default"},
 				weightsName: "UserDefined",
 				ntName:      "nt-test",
 			}
 
 			// Wait for the pods to be scheduled.
-			if err := wait.Poll(1*time.Second, 20*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(ctx, 1*time.Second, 20*time.Second, false, func(ctx context.Context) (bool, error) {
 				return true, nil
 			}); err != nil {
 				t.Errorf("pods not scheduled yet: %v ", err)
@@ -1246,7 +1260,7 @@ func TestNetworkOverheadFilter(t *testing.T) {
 			state := framework.NewCycleState()
 
 			// Prefilter
-			if _, got := pl.PreFilter(context.TODO(), state, tt.pod); got.Code() != tt.expected {
+			if _, got := pl.PreFilter(context.TODO(), state, tt.pod, nil); got.Code() != tt.expected {
 				t.Errorf("expected %v, got %v : %v", tt.expected, got.Code(), got.Message())
 			}
 
@@ -1297,7 +1311,7 @@ func BenchmarkNetworkOverheadFilter(b *testing.B) {
 		networkTopology *ntv1alpha1.NetworkTopology
 		pod             *v1.Pod
 		pods            []*v1.Pod
-		expected        framework.Code
+		expected        fwk.Code
 	}{
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 10 nodes, 1 pod to allocate",
@@ -1310,7 +1324,7 @@ func BenchmarkNetworkOverheadFilter(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 100 nodes, 1 pod to allocate",
@@ -1323,7 +1337,7 @@ func BenchmarkNetworkOverheadFilter(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 500 nodes, 1 pod to allocate",
@@ -1336,7 +1350,7 @@ func BenchmarkNetworkOverheadFilter(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 1000 nodes, 1 pod to allocate",
@@ -1349,7 +1363,7 @@ func BenchmarkNetworkOverheadFilter(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 2000 nodes, 1 pod to allocate",
@@ -1362,7 +1376,7 @@ func BenchmarkNetworkOverheadFilter(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 3000 nodes, 1 pod to allocate",
@@ -1375,7 +1389,7 @@ func BenchmarkNetworkOverheadFilter(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 5000 nodes, 1 pod to allocate",
@@ -1388,7 +1402,7 @@ func BenchmarkNetworkOverheadFilter(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 		{
 			name:            "AppGroup: onlineboutique, 10 pods allocated, 10000 nodes, 1 pod to allocate",
@@ -1401,32 +1415,31 @@ func BenchmarkNetworkOverheadFilter(b *testing.B) {
 			networkTopology: networkTopology,
 			pod:             makePod("p1", "p1-deployment", 0, "onlineboutique", nil, nil),
 			pods:            pods,
-			expected:        framework.Success,
+			expected:        fwk.Success,
 		},
 	}
 
 	for _, tt := range tests {
 		b.Run(tt.name, func(b *testing.B) {
-			// init listers
-			agClient := agfake.NewSimpleClientset()
-			ntClient := ntfake.NewSimpleClientset()
-
-			fakeAgInformer := aginformers.NewSharedInformerFactory(agClient, 0).Appgroup().V1alpha1().AppGroups()
-			fakeNTInformer := ntinformers.NewSharedInformerFactory(ntClient, 0).Networktopology().V1alpha1().NetworkTopologies()
+			s := clientgoscheme.Scheme
+			utilruntime.Must(agv1alpha1.AddToScheme(s))
+			utilruntime.Must(ntv1alpha1.AddToScheme(s))
 
 			// init nodes
 			nodes := getNodes(tt.nodesNum, tt.regionNames, tt.zoneNames)
 
-			// add CRDs
-			agLister := fakeAgInformer.Lister()
-			ntLister := fakeNTInformer.Lister()
-
-			_ = fakeAgInformer.Informer().GetStore().Add(tt.appGroup)
-			_ = fakeNTInformer.Informer().GetStore().Add(tt.networkTopology)
-
 			// create plugin
 			ctx := context.Background()
 			cs := testClientSet.NewSimpleClientset()
+			builder := fake.NewClientBuilder().
+				WithScheme(s).
+				WithStatusSubresource(&agv1alpha1.AppGroup{}).
+				WithStatusSubresource(&ntv1alpha1.NetworkTopology{}).
+				WithObjects(tt.appGroup, tt.networkTopology)
+			for _, p := range tt.pods {
+				builder.WithObjects(p.DeepCopy())
+			}
+			client := builder.Build()
 
 			informerFactory := informers.NewSharedInformerFactory(cs, 0)
 
@@ -1444,26 +1457,27 @@ func BenchmarkNetworkOverheadFilter(b *testing.B) {
 				}
 			}
 
-			registeredPlugins := []st.RegisterPluginFunc{
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+			registeredPlugins := []tf.RegisterPluginFunc{
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
 			}
 
-			fh, _ := st.NewFramework(registeredPlugins, "default-scheduler", ctx.Done(), runtime.WithClientSet(cs),
-				runtime.WithInformerFactory(informerFactory), runtime.WithSnapshotSharedLister(snapshot))
+			fh, _ := tf.NewFramework(ctx, registeredPlugins, "default-scheduler",
+				schedruntime.WithClientSet(cs),
+				schedruntime.WithInformerFactory(informerFactory),
+				schedruntime.WithSnapshotSharedLister(snapshot))
 
 			pl := &NetworkOverhead{
-				handle:      fh,
-				agLister:    agLister,
+				Client:      client,
 				podLister:   podLister,
-				ntLister:    ntLister,
+				handle:      fh,
 				namespaces:  []string{"default"},
 				weightsName: "UserDefined",
 				ntName:      "nt-test",
 			}
 
 			// Wait for the pods to be scheduled.
-			if err := wait.Poll(1*time.Second, 20*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(ctx, 1*time.Second, 20*time.Second, false, func(ctx context.Context) (bool, error) {
 				return true, nil
 			}); err != nil {
 				b.Errorf("pods not scheduled yet: %v ", err)
@@ -1472,7 +1486,7 @@ func BenchmarkNetworkOverheadFilter(b *testing.B) {
 			state := framework.NewCycleState()
 
 			// Prefilter
-			if _, got := pl.PreFilter(context.TODO(), state, tt.pod); got.Code() != tt.expected {
+			if _, got := pl.PreFilter(context.TODO(), state, tt.pod, nil); got.Code() != tt.expected {
 				b.Errorf("expected %v, got %v : %v", tt.expected, got.Code(), got.Message())
 			}
 
@@ -1511,14 +1525,14 @@ func Until(ctx context.Context, pieces int, doWorkPiece workqueue.DoWorkPieceFun
 }
 
 func newTestSharedLister(pods []*v1.Pod, nodes []*v1.Node) *testSharedLister {
-	nodeInfoMap := make(map[string]*framework.NodeInfo)
-	nodeInfos := make([]*framework.NodeInfo, 0)
+	nodeInfoMap := make(map[string]fwk.NodeInfo)
+	nodeInfos := make([]fwk.NodeInfo, 0)
 	for _, pod := range pods {
 		nodeName := pod.Spec.NodeName
 		if _, ok := nodeInfoMap[nodeName]; !ok {
 			nodeInfoMap[nodeName] = framework.NewNodeInfo()
 		}
-		nodeInfoMap[nodeName].AddPod(pod)
+		nodeInfoMap[nodeName].(*framework.NodeInfo).AddPod(pod)
 	}
 	for _, node := range nodes {
 		if _, ok := nodeInfoMap[node.Name]; !ok {

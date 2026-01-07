@@ -25,23 +25,23 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler"
 	fwkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"sigs.k8s.io/scheduler-plugins/apis/scheduling"
 	"sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
 	"sigs.k8s.io/scheduler-plugins/pkg/controllers"
 	"sigs.k8s.io/scheduler-plugins/pkg/coscheduling"
-	"sigs.k8s.io/scheduler-plugins/pkg/generated/clientset/versioned"
 	"sigs.k8s.io/scheduler-plugins/test/util"
 
 	gocmp "github.com/google/go-cmp/cmp"
@@ -53,7 +53,7 @@ func TestPodGroupController(t *testing.T) {
 	testCtx.Ctx, testCtx.CancelFn = context.WithCancel(context.Background())
 
 	cs := kubernetes.NewForConfigOrDie(globalKubeConfig)
-	extClient := versioned.NewForConfigOrDie(globalKubeConfig)
+	extClient := util.NewClientOrDie(testCtx.Ctx, globalKubeConfig)
 	testCtx.ClientSet = cs
 	testCtx.KubeConfig = globalKubeConfig
 
@@ -62,8 +62,10 @@ func TestPodGroupController(t *testing.T) {
 	runtime.Must(v1alpha1.AddToScheme(s))
 
 	mgrOpts := manager.Options{
-		Scheme:             s,
-		MetricsBindAddress: "0", // disable metrics to avoid conflicts between packages.
+		Scheme: s,
+		Metrics: metricsserver.Options{
+			BindAddress: "0", // disable metrics to avoid conflicts between packages.
+		},
 	}
 
 	mgr, _ := ctrl.NewManager(globalKubeConfig, mgrOpts)
@@ -80,7 +82,7 @@ func TestPodGroupController(t *testing.T) {
 		}
 	}()
 
-	if err := wait.Poll(100*time.Millisecond, 3*time.Second, func() (done bool, err error) {
+	if err := wait.PollUntilContextTimeout(testCtx.Ctx, 100*time.Millisecond, 3*time.Second, false, func(ctx context.Context) (done bool, err error) {
 		groupList, _, err := cs.ServerGroupsAndResources()
 		if err != nil {
 			return false, nil
@@ -148,7 +150,7 @@ func TestPodGroupController(t *testing.T) {
 					midPriority).Label(v1alpha1.PodGroupLabel, "pg1-1").Node(nodeName).Obj(),
 			},
 			intermediatePGState: []*v1alpha1.PodGroup{
-				util.UpdatePGStatus(util.MakePG("pg1-1", ns, 3, nil, nil), "PreScheduling", "", 0, 0, 0, 0),
+				util.UpdatePGStatus(util.MakePG("pg1-1", ns, 3, nil, nil), "Scheduling", "", 0, 0, 0, 0),
 			},
 			incomingPods: []*v1.Pod{
 				st.MakePod().Namespace(ns).Name("t1-p1-1").Req(map[v1.ResourceName]string{v1.ResourceMemory: "50"}).Priority(
@@ -278,7 +280,7 @@ func TestPodGroupController(t *testing.T) {
 
 			// create Pods
 			for _, pod := range tt.existingPods {
-				klog.InfoS("Creating pod ", "podName", pod.Name)
+				t.Log("Creating pod", "podName", pod.Name)
 				if _, err := cs.CoreV1().Pods(pod.Namespace).Create(testCtx.Ctx, pod, metav1.CreateOptions{}); err != nil {
 					t.Fatalf("Failed to create Pod %q: %v", pod.Name, err)
 				}
@@ -288,9 +290,9 @@ func TestPodGroupController(t *testing.T) {
 					}
 				}
 			}
-			if err := wait.Poll(time.Millisecond*200, 10*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(testCtx.Ctx, time.Millisecond*200, 10*time.Second, false, func(ctx context.Context) (bool, error) {
 				for _, pod := range tt.incomingPods {
-					if !podScheduled(cs, ns, pod.Name) {
+					if !podScheduled(t, cs, ns, pod.Name) {
 						return false, nil
 					}
 				}
@@ -299,12 +301,12 @@ func TestPodGroupController(t *testing.T) {
 				t.Fatalf("%v Waiting existPods create error: %v", tt.name, err.Error())
 			}
 
-			if err := wait.Poll(time.Millisecond*200, 10*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(testCtx.Ctx, time.Millisecond*200, 10*time.Second, false, func(ctx context.Context) (bool, error) {
 				for _, v := range tt.intermediatePGState {
-					pg, err := extClient.SchedulingV1alpha1().PodGroups(v.Namespace).Get(testCtx.Ctx, v.Name, metav1.GetOptions{})
-					if err != nil {
+					var pg v1alpha1.PodGroup
+					if err := extClient.Get(ctx, types.NamespacedName{Namespace: v.Namespace, Name: v.Name}, &pg); err != nil {
 						// This could be a connection error so we want to retry.
-						klog.ErrorS(err, "Failed to obtain the PodGroup clientSet")
+						t.Error("Failed to obtain the PodGroup clientSet: ", err)
 						return false, err
 					}
 					if diff := gocmp.Diff(pg.Status, v.Status, ignoreOpts); diff != "" {
@@ -324,9 +326,9 @@ func TestPodGroupController(t *testing.T) {
 				}
 			}
 			// wait for all incomingPods to be scheduled
-			if err := wait.Poll(time.Millisecond*200, 10*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(testCtx.Ctx, time.Millisecond*200, 10*time.Second, false, func(ctx context.Context) (bool, error) {
 				for _, pod := range tt.incomingPods {
-					if !podScheduled(cs, pod.Namespace, pod.Name) {
+					if !podScheduled(t, cs, pod.Namespace, pod.Name) {
 						return false, nil
 					}
 				}
@@ -335,12 +337,12 @@ func TestPodGroupController(t *testing.T) {
 				t.Fatalf("%v Waiting incomingPods scheduled error: %v", tt.name, err.Error())
 			}
 
-			if err := wait.Poll(time.Millisecond*200, 10*time.Second, func() (bool, error) {
+			if err := wait.PollUntilContextTimeout(testCtx.Ctx, time.Millisecond*200, 10*time.Second, false, func(ctx context.Context) (bool, error) {
 				for _, v := range tt.expectedPGState {
-					pg, err := extClient.SchedulingV1alpha1().PodGroups(v.Namespace).Get(testCtx.Ctx, v.Name, metav1.GetOptions{})
-					if err != nil {
+					var pg v1alpha1.PodGroup
+					if err := extClient.Get(ctx, types.NamespacedName{Namespace: v.Namespace, Name: v.Name}, &pg); err != nil {
 						// This could be a connection error so we want to retry.
-						klog.ErrorS(err, "Failed to obtain the PodGroup clientSet")
+						t.Error("Failed to obtain the PodGroup clientSet: ", err)
 						return false, err
 					}
 

@@ -17,78 +17,13 @@ limitations under the License.
 package noderesourcetopology
 
 import (
-	"fmt"
-	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/klog/v2"
+	apiconfig "sigs.k8s.io/scheduler-plugins/apis/config"
 )
-
-func TestGetID(t *testing.T) {
-	testCases := []struct {
-		description string
-		name        string
-		expectedID  int
-		expectedErr error
-	}{
-		{
-			description: "id equals 1",
-			name:        "node-1",
-			expectedID:  1,
-		},
-		{
-			description: "id equals 10",
-			name:        "node-10",
-			expectedID:  10,
-		},
-		{
-			description: "invalid format of name, node name without hyphen",
-			name:        "node0",
-			expectedErr: fmt.Errorf("invalid zone format"),
-		},
-		{
-			description: "invalid format of name, zone instead of node",
-			name:        "zone-10",
-			expectedErr: fmt.Errorf("invalid zone format"),
-		},
-		{
-			description: "invalid format of name, suffix is not an integer",
-			name:        "node-a10a",
-			expectedErr: fmt.Errorf("invalid zone format"),
-		},
-		{
-			description: "invalid format of name, suffix is not an integer",
-			name:        "node-10a",
-			expectedErr: fmt.Errorf("invalid zone format"),
-		},
-		{
-			description: "invalid numaID range",
-			name:        "node-10123412415115114",
-			expectedErr: fmt.Errorf("invalid NUMA id range"),
-		},
-	}
-
-	for _, testCase := range testCases {
-		t.Run(testCase.description, func(t *testing.T) {
-			id, err := getID(testCase.name)
-			if testCase.expectedErr == nil {
-				if err != nil {
-					t.Fatalf("expected err to be nil not %v", err)
-				}
-
-				if id != testCase.expectedID {
-					t.Fatalf("expected id to equal %d not %d", testCase.expectedID, id)
-				}
-			} else {
-				fmt.Println(id)
-				if !strings.Contains(err.Error(), testCase.expectedErr.Error()) {
-					t.Fatalf("expected err: %v to contain %s", err, testCase.expectedErr)
-				}
-			}
-		})
-	}
-}
 
 func TestOnlyNonNUMAResources(t *testing.T) {
 	numaNodes := NUMANodeList{
@@ -165,6 +100,58 @@ func TestOnlyNonNUMAResources(t *testing.T) {
 			result := onlyNonNUMAResources(numaNodes, testCase.resources)
 			if result != testCase.expected {
 				t.Fatalf("expected %t to equal %t", result, testCase.expected)
+			}
+		})
+	}
+}
+
+func TestGetForeignPodsDetectMode(t *testing.T) {
+	detectAll := apiconfig.ForeignPodsDetectAll
+	detectNone := apiconfig.ForeignPodsDetectNone
+	detectOnlyExclusiveResources := apiconfig.ForeignPodsDetectOnlyExclusiveResources
+
+	testCases := []struct {
+		description string
+		cfg         *apiconfig.NodeResourceTopologyCache
+		expected    apiconfig.ForeignPodsDetectMode
+	}{
+		{
+			description: "nil config",
+			expected:    apiconfig.ForeignPodsDetectAll,
+		},
+		{
+			description: "empty config",
+			cfg:         &apiconfig.NodeResourceTopologyCache{},
+			expected:    apiconfig.ForeignPodsDetectAll,
+		},
+		{
+			description: "explicit all",
+			cfg: &apiconfig.NodeResourceTopologyCache{
+				ForeignPodsDetect: &detectAll,
+			},
+			expected: apiconfig.ForeignPodsDetectAll,
+		},
+		{
+			description: "explicit disable",
+			cfg: &apiconfig.NodeResourceTopologyCache{
+				ForeignPodsDetect: &detectNone,
+			},
+			expected: apiconfig.ForeignPodsDetectNone,
+		},
+		{
+			description: "explicit OnlyExclusiveResources",
+			cfg: &apiconfig.NodeResourceTopologyCache{
+				ForeignPodsDetect: &detectOnlyExclusiveResources,
+			},
+			expected: apiconfig.ForeignPodsDetectOnlyExclusiveResources,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.description, func(t *testing.T) {
+			got := getForeignPodsDetectMode(klog.Background(), testCase.cfg)
+			if got != testCase.expected {
+				t.Errorf("foreign pods detect mode got %v expected %v", got, testCase.expected)
 			}
 		})
 	}

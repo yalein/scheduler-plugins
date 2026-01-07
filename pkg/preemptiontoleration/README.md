@@ -14,7 +14,7 @@ This folder holds the preemption toleration plugin implemented as discussed in [
 ## Example scheduler config:
 
 ```yaml
-apiVersion: kubescheduler.config.k8s.io/v1beta2
+apiVersion: kubescheduler.config.k8s.io/v1
 kind: KubeSchedulerConfiguration
 leaderElection:
   leaderElect: false
@@ -39,10 +39,11 @@ Preemption toleration policy can be defined on each `PriorityClass` resource by 
 # Any pod P in this priority class can not be preempted (can tolerate preemption)
 # - by preemptor pods with priority < 10000 
 # - and if P is within 1h since being scheduled
+apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
 metadata:
   name: toleration-policy-sample
-  annotation:
+  annotations:
     preemption-toleration.scheduling.x-k8s.io/minimum-preemptable-priority: "10000"
     preemption-toleration.scheduling.x-k8s.io/toleration-seconds: "3600"
 value: 8000

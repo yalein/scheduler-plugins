@@ -28,7 +28,8 @@ import (
 
 	"github.com/paypal/load-watcher/pkg/watcher"
 	"github.com/stretchr/testify/assert"
-	"k8s.io/apimachinery/pkg/util/wait"
+	fwk "k8s.io/kube-scheduler/framework"
+	"k8s.io/kubernetes/pkg/scheduler/metrics"
 	testutil "sigs.k8s.io/scheduler-plugins/test/util"
 
 	v1 "k8s.io/api/core/v1"
@@ -43,17 +44,18 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/queuesort"
 	"k8s.io/kubernetes/pkg/scheduler/framework/runtime"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
+	tf "k8s.io/kubernetes/pkg/scheduler/testing/framework"
 
 	pluginConfig "sigs.k8s.io/scheduler-plugins/apis/config"
-	"sigs.k8s.io/scheduler-plugins/apis/config/v1beta2"
+	cfgv1 "sigs.k8s.io/scheduler-plugins/apis/config/v1"
 )
 
 var _ framework.SharedLister = &testSharedLister{}
 
 type testSharedLister struct {
 	nodes       []*v1.Node
-	nodeInfos   []*framework.NodeInfo
-	nodeInfoMap map[string]*framework.NodeInfo
+	nodeInfos   []fwk.NodeInfo
+	nodeInfoMap map[string]fwk.NodeInfo
 }
 
 func (f *testSharedLister) StorageInfos() framework.StorageInfoLister {
@@ -64,62 +66,67 @@ func (f *testSharedLister) NodeInfos() framework.NodeInfoLister {
 	return f
 }
 
-func (f *testSharedLister) List() ([]*framework.NodeInfo, error) {
+func (f *testSharedLister) List() ([]fwk.NodeInfo, error) {
 	return f.nodeInfos, nil
 }
 
-func (f *testSharedLister) HavePodsWithAffinityList() ([]*framework.NodeInfo, error) {
+func (f *testSharedLister) HavePodsWithAffinityList() ([]fwk.NodeInfo, error) {
 	return nil, nil
 }
 
-func (f *testSharedLister) HavePodsWithRequiredAntiAffinityList() ([]*framework.NodeInfo, error) {
+func (f *testSharedLister) HavePodsWithRequiredAntiAffinityList() ([]fwk.NodeInfo, error) {
 	return nil, nil
 }
 
-func (f *testSharedLister) Get(nodeName string) (*framework.NodeInfo, error) {
+func (f *testSharedLister) Get(nodeName string) (fwk.NodeInfo, error) {
 	return f.nodeInfoMap[nodeName], nil
 }
 
 func TestNew(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	targetLoadPackingArgs := pluginConfig.TargetLoadPackingArgs{
 		TrimaranSpec:              pluginConfig.TrimaranSpec{WatcherAddress: "http://deadbeef:2020"},
-		TargetUtilization:         v1beta2.DefaultTargetUtilizationPercent,
-		DefaultRequestsMultiplier: v1beta2.DefaultRequestsMultiplier,
+		TargetUtilization:         cfgv1.DefaultTargetUtilizationPercent,
+		DefaultRequestsMultiplier: cfgv1.DefaultRequestsMultiplier,
 	}
 	targetLoadPackingConfig := config.PluginConfig{
 		Name: Name,
 		Args: &targetLoadPackingArgs,
 	}
-	registeredPlugins := []st.RegisterPluginFunc{
-		st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-		st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-		st.RegisterScorePlugin(Name, New, 1),
+	registeredPlugins := []tf.RegisterPluginFunc{
+		tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+		tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+		tf.RegisterScorePlugin(Name, New, 1),
 	}
 
+	// Initialize scheduler metrics
+	metrics.Register()
 	cs := testClientSet.NewSimpleClientset()
 	informerFactory := informers.NewSharedInformerFactory(cs, 0)
 	snapshot := newTestSharedLister(nil, nil)
-	fh, err := testutil.NewFramework(registeredPlugins, []config.PluginConfig{targetLoadPackingConfig},
+	fh, err := testutil.NewFramework(ctx, registeredPlugins, []config.PluginConfig{targetLoadPackingConfig},
 		"kube-scheduler", runtime.WithClientSet(cs),
 		runtime.WithInformerFactory(informerFactory), runtime.WithSnapshotSharedLister(snapshot))
 	assert.Nil(t, err)
-	p, err := New(&targetLoadPackingArgs, fh)
+	p, err := New(ctx, &targetLoadPackingArgs, fh)
 	assert.NotNil(t, p)
 	assert.Nil(t, err)
 }
 
 func TestTargetLoadPackingScoring(t *testing.T) {
 
-	registeredPlugins := []st.RegisterPluginFunc{
-		st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-		st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-		st.RegisterScorePlugin(Name, New, 1),
+	registeredPlugins := []tf.RegisterPluginFunc{
+		tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+		tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+		tf.RegisterScorePlugin(Name, New, 1),
 	}
 
 	targetLoadPackingArgs := pluginConfig.TargetLoadPackingArgs{
 		TrimaranSpec:              pluginConfig.TrimaranSpec{WatcherAddress: "http://deadbeef:2020"},
-		TargetUtilization:         v1beta2.DefaultTargetUtilizationPercent,
-		DefaultRequestsMultiplier: v1beta2.DefaultRequestsMultiplier,
+		TargetUtilization:         cfgv1.DefaultTargetUtilizationPercent,
+		DefaultRequestsMultiplier: cfgv1.DefaultRequestsMultiplier,
 	}
 	targetLoadPackingConfig := config.PluginConfig{
 		Name: Name,
@@ -161,7 +168,7 @@ func TestTargetLoadPackingScoring(t *testing.T) {
 				},
 			},
 			expected: []framework.NodeScore{
-				{Name: "node-1", Score: v1beta2.DefaultTargetUtilizationPercent},
+				{Name: "node-1", Score: cfgv1.DefaultTargetUtilizationPercent},
 			},
 		},
 		{
@@ -179,7 +186,7 @@ func TestTargetLoadPackingScoring(t *testing.T) {
 							Metrics: []watcher.Metric{
 								{
 									Type:     watcher.CPU,
-									Value:    float64(v1beta2.DefaultTargetUtilizationPercent + 10),
+									Value:    float64(cfgv1.DefaultTargetUtilizationPercent + 10),
 									Operator: watcher.Latest,
 								},
 							},
@@ -237,8 +244,10 @@ func TestTargetLoadPackingScoring(t *testing.T) {
 				assert.Nil(t, err)
 				resp.Write(bytes)
 			}))
-
 			defer server.Close()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
 			nodes := append([]*v1.Node{}, tt.nodes...)
 			state := framework.NewCycleState()
@@ -246,21 +255,23 @@ func TestTargetLoadPackingScoring(t *testing.T) {
 			cs := testClientSet.NewSimpleClientset()
 			informerFactory := informers.NewSharedInformerFactory(cs, 0)
 			snapshot := newTestSharedLister(nil, nodes)
-			fh, err := testutil.NewFramework(registeredPlugins, []config.PluginConfig{targetLoadPackingConfig},
+			fh, err := testutil.NewFramework(ctx, registeredPlugins, []config.PluginConfig{targetLoadPackingConfig},
 				"default-scheduler", runtime.WithClientSet(cs),
 				runtime.WithInformerFactory(informerFactory), runtime.WithSnapshotSharedLister(snapshot))
 			assert.Nil(t, err)
 			targetLoadPackingArgs := pluginConfig.TargetLoadPackingArgs{
 				TrimaranSpec:              pluginConfig.TrimaranSpec{WatcherAddress: server.URL},
-				TargetUtilization:         v1beta2.DefaultTargetUtilizationPercent,
-				DefaultRequestsMultiplier: v1beta2.DefaultRequestsMultiplier,
+				TargetUtilization:         cfgv1.DefaultTargetUtilizationPercent,
+				DefaultRequestsMultiplier: cfgv1.DefaultRequestsMultiplier,
 			}
-			p, _ := New(&targetLoadPackingArgs, fh)
+			p, _ := New(ctx, &targetLoadPackingArgs, fh)
 			scorePlugin := p.(framework.ScorePlugin)
 			var actualList framework.NodeScoreList
 			for _, n := range tt.nodes {
 				nodeName := n.Name
-				score, status := scorePlugin.Score(context.Background(), state, tt.pod, nodeName)
+				nodeInfo := framework.NewNodeInfo()
+				nodeInfo.SetNode(n)
+				score, status := scorePlugin.Score(context.Background(), state, tt.pod, nodeInfo)
 				assert.True(t, status.IsSuccess())
 				actualList = append(actualList, framework.NodeScore{Name: nodeName, Score: score})
 			}
@@ -292,10 +303,10 @@ func BenchmarkTargetLoadPackingPlugin(b *testing.B) {
 		},
 	}
 
-	registeredPlugins := []st.RegisterPluginFunc{
-		st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-		st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-		st.RegisterScorePlugin(Name, New, 1),
+	registeredPlugins := []tf.RegisterPluginFunc{
+		tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+		tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+		tf.RegisterScorePlugin(Name, New, 1),
 	}
 
 	bfbpArgs := pluginConfig.TargetLoadPackingArgs{}
@@ -341,23 +352,27 @@ func BenchmarkTargetLoadPackingPlugin(b *testing.B) {
 			bfbpArgs.WatcherAddress = server.URL
 			defer server.Close()
 
-			fh, err := st.NewFramework(registeredPlugins, "default-scheduler", wait.NeverStop, runtime.WithClientSet(cs),
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			fh, err := tf.NewFramework(ctx, registeredPlugins, "default-scheduler", runtime.WithClientSet(cs),
 				runtime.WithInformerFactory(informerFactory), runtime.WithSnapshotSharedLister(snapshot))
 			assert.Nil(b, err)
-			pl, err := New(&bfbpArgs, fh)
+			pl, err := New(ctx, &bfbpArgs, fh)
 			assert.Nil(b, err)
 			scorePlugin := pl.(framework.ScorePlugin)
 			informerFactory.Start(context.Background().Done())
 			informerFactory.WaitForCacheSync(context.Background().Done())
 
-			ctx := context.Background()
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
 				gotList := make(framework.NodeScoreList, len(nodes))
 				scoreNode := func(i int) {
 					n := nodes[i]
-					score, _ := scorePlugin.Score(ctx, state, pod, n.Name)
+					nodeInfo := framework.NewNodeInfo()
+					nodeInfo.SetNode(n)
+					score, _ := scorePlugin.Score(ctx, state, pod, nodeInfo)
 					gotList[i] = framework.NodeScore{Name: n.Name, Score: score}
 				}
 				Until(ctx, len(nodes), scoreNode)
@@ -390,14 +405,14 @@ func Until(ctx context.Context, pieces int, doWorkPiece workqueue.DoWorkPieceFun
 }
 
 func newTestSharedLister(pods []*v1.Pod, nodes []*v1.Node) *testSharedLister {
-	nodeInfoMap := make(map[string]*framework.NodeInfo)
-	nodeInfos := make([]*framework.NodeInfo, 0)
+	nodeInfoMap := make(map[string]fwk.NodeInfo)
+	nodeInfos := make([]fwk.NodeInfo, 0)
 	for _, pod := range pods {
 		nodeName := pod.Spec.NodeName
 		if _, ok := nodeInfoMap[nodeName]; !ok {
 			nodeInfoMap[nodeName] = framework.NewNodeInfo()
 		}
-		nodeInfoMap[nodeName].AddPod(pod)
+		nodeInfoMap[nodeName].(*framework.NodeInfo).AddPod(pod)
 	}
 	for _, node := range nodes {
 		if _, ok := nodeInfoMap[node.Name]; !ok {

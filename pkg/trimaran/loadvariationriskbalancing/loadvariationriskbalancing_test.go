@@ -26,6 +26,7 @@ import (
 
 	"github.com/paypal/load-watcher/pkg/watcher"
 	"github.com/stretchr/testify/assert"
+	fwk "k8s.io/kube-scheduler/framework"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -36,10 +37,12 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultbinder"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/queuesort"
 	"k8s.io/kubernetes/pkg/scheduler/framework/runtime"
+	"k8s.io/kubernetes/pkg/scheduler/metrics"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
+	tf "k8s.io/kubernetes/pkg/scheduler/testing/framework"
 
 	pluginConfig "sigs.k8s.io/scheduler-plugins/apis/config"
-	"sigs.k8s.io/scheduler-plugins/apis/config/v1beta2"
+	cfgv1 "sigs.k8s.io/scheduler-plugins/apis/config/v1"
 	testutil "sigs.k8s.io/scheduler-plugins/test/util"
 )
 
@@ -47,8 +50,8 @@ var _ framework.SharedLister = &testSharedLister{}
 
 type testSharedLister struct {
 	nodes       []*v1.Node
-	nodeInfos   []*framework.NodeInfo
-	nodeInfoMap map[string]*framework.NodeInfo
+	nodeInfos   []fwk.NodeInfo
+	nodeInfoMap map[string]fwk.NodeInfo
 }
 
 func (f *testSharedLister) StorageInfos() framework.StorageInfoLister {
@@ -59,19 +62,19 @@ func (f *testSharedLister) NodeInfos() framework.NodeInfoLister {
 	return f
 }
 
-func (f *testSharedLister) List() ([]*framework.NodeInfo, error) {
+func (f *testSharedLister) List() ([]fwk.NodeInfo, error) {
 	return f.nodeInfos, nil
 }
 
-func (f *testSharedLister) HavePodsWithAffinityList() ([]*framework.NodeInfo, error) {
+func (f *testSharedLister) HavePodsWithAffinityList() ([]fwk.NodeInfo, error) {
 	return nil, nil
 }
 
-func (f *testSharedLister) HavePodsWithRequiredAntiAffinityList() ([]*framework.NodeInfo, error) {
+func (f *testSharedLister) HavePodsWithRequiredAntiAffinityList() ([]fwk.NodeInfo, error) {
 	return nil, nil
 }
 
-func (f *testSharedLister) Get(nodeName string) (*framework.NodeInfo, error) {
+func (f *testSharedLister) Get(nodeName string) (fwk.NodeInfo, error) {
 	return f.nodeInfoMap[nodeName], nil
 }
 
@@ -84,29 +87,34 @@ func TestNew(t *testing.T) {
 	}))
 	defer server.Close()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	loadVariationRiskBalancingArgs := pluginConfig.LoadVariationRiskBalancingArgs{
 		TrimaranSpec:            pluginConfig.TrimaranSpec{WatcherAddress: server.URL},
-		SafeVarianceMargin:      v1beta2.DefaultSafeVarianceMargin,
-		SafeVarianceSensitivity: v1beta2.DefaultSafeVarianceSensitivity,
+		SafeVarianceMargin:      cfgv1.DefaultSafeVarianceMargin,
+		SafeVarianceSensitivity: cfgv1.DefaultSafeVarianceSensitivity,
 	}
 	loadVariationRiskBalancingConfig := config.PluginConfig{
 		Name: Name,
 		Args: &loadVariationRiskBalancingArgs,
 	}
-	registeredPlugins := []st.RegisterPluginFunc{
-		st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-		st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-		st.RegisterScorePlugin(Name, New, 1),
+	registeredPlugins := []tf.RegisterPluginFunc{
+		tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+		tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+		tf.RegisterScorePlugin(Name, New, 1),
 	}
 
+	// Initialize scheduler metrics
+	metrics.Register()
 	cs := testClientSet.NewSimpleClientset()
 	informerFactory := informers.NewSharedInformerFactory(cs, 0)
 	snapshot := newTestSharedLister(nil, nil)
-	fh, err := testutil.NewFramework(registeredPlugins, []config.PluginConfig{loadVariationRiskBalancingConfig},
+	fh, err := testutil.NewFramework(ctx, registeredPlugins, []config.PluginConfig{loadVariationRiskBalancingConfig},
 		"default-scheduler", runtime.WithClientSet(cs),
 		runtime.WithInformerFactory(informerFactory), runtime.WithSnapshotSharedLister(snapshot))
 	assert.Nil(t, err)
-	p, err := New(&loadVariationRiskBalancingArgs, fh)
+	p, err := New(ctx, &loadVariationRiskBalancingArgs, fh)
 	assert.NotNil(t, p)
 	assert.Nil(t, err)
 
@@ -115,12 +123,12 @@ func TestNew(t *testing.T) {
 		TrimaranSpec:       pluginConfig.TrimaranSpec{WatcherAddress: server.URL},
 		SafeVarianceMargin: -5,
 	}
-	badp, err := New(&badArgs, fh)
+	badp, err := New(ctx, &badArgs, fh)
 	assert.NotNil(t, badp)
 	assert.Nil(t, err)
 
 	badArgs.SafeVarianceSensitivity = -1
-	badp, err = New(&badArgs, fh)
+	badp, err = New(ctx, &badArgs, fh)
 	assert.NotNil(t, badp)
 	assert.Nil(t, err)
 }
@@ -320,9 +328,9 @@ func TestScore(t *testing.T) {
 		},
 	}
 
-	registeredPlugins := []st.RegisterPluginFunc{
-		st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-		st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+	registeredPlugins := []tf.RegisterPluginFunc{
+		tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+		tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
 	}
 
 	for _, tt := range tests {
@@ -334,13 +342,16 @@ func TestScore(t *testing.T) {
 			}))
 			defer server.Close()
 
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
 			nodes := append([]*v1.Node{}, tt.nodes...)
 			state := framework.NewCycleState()
 
 			loadVariationRiskBalancingArgs := pluginConfig.LoadVariationRiskBalancingArgs{
 				TrimaranSpec:            pluginConfig.TrimaranSpec{WatcherAddress: server.URL},
-				SafeVarianceMargin:      v1beta2.DefaultSafeVarianceMargin,
-				SafeVarianceSensitivity: v1beta2.DefaultSafeVarianceSensitivity,
+				SafeVarianceMargin:      cfgv1.DefaultSafeVarianceMargin,
+				SafeVarianceSensitivity: cfgv1.DefaultSafeVarianceSensitivity,
 			}
 			loadVariationRiskBalancingConfig := config.PluginConfig{
 				Name: Name,
@@ -351,17 +362,19 @@ func TestScore(t *testing.T) {
 			informerFactory := informers.NewSharedInformerFactory(cs, 0)
 			snapshot := newTestSharedLister(nil, nodes)
 
-			fh, err := testutil.NewFramework(registeredPlugins, []config.PluginConfig{loadVariationRiskBalancingConfig},
+			fh, err := testutil.NewFramework(ctx, registeredPlugins, []config.PluginConfig{loadVariationRiskBalancingConfig},
 				"default-scheduler", runtime.WithClientSet(cs),
 				runtime.WithInformerFactory(informerFactory), runtime.WithSnapshotSharedLister(snapshot))
 			assert.Nil(t, err)
-			p, _ := New(&loadVariationRiskBalancingArgs, fh)
+			p, _ := New(ctx, &loadVariationRiskBalancingArgs, fh)
 			scorePlugin := p.(framework.ScorePlugin)
 
 			var actualList framework.NodeScoreList
 			for _, n := range tt.nodes {
 				nodeName := n.Name
-				score, status := scorePlugin.Score(context.Background(), state, tt.pod, nodeName)
+				nodeInfo := framework.NewNodeInfo()
+				nodeInfo.SetNode(n)
+				score, status := scorePlugin.Score(context.Background(), state, tt.pod, nodeInfo)
 				assert.True(t, status.IsSuccess())
 				actualList = append(actualList, framework.NodeScore{Name: nodeName, Score: score})
 			}
@@ -371,14 +384,14 @@ func TestScore(t *testing.T) {
 }
 
 func newTestSharedLister(pods []*v1.Pod, nodes []*v1.Node) *testSharedLister {
-	nodeInfoMap := make(map[string]*framework.NodeInfo)
-	nodeInfos := make([]*framework.NodeInfo, 0)
+	nodeInfoMap := make(map[string]fwk.NodeInfo)
+	nodeInfos := make([]fwk.NodeInfo, 0)
 	for _, pod := range pods {
 		nodeName := pod.Spec.NodeName
 		if _, ok := nodeInfoMap[nodeName]; !ok {
 			nodeInfoMap[nodeName] = framework.NewNodeInfo()
 		}
-		nodeInfoMap[nodeName].AddPod(pod)
+		nodeInfoMap[nodeName].(*framework.NodeInfo).AddPod(pod)
 	}
 	for _, node := range nodes {
 		if _, ok := nodeInfoMap[node.Name]; !ok {

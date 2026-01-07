@@ -34,9 +34,9 @@ If you would like to build just the binaries you can do it by
 make
 ```
 command.
-If you changed the branch or added new dependency you might need to regenerate vendor directory, for this you can use
+If you changed the branch or added new dependency you might need to update the go.mod, for this you can use
 ```shell
-make update-vendor
+make update-gomod
 ```
 command.
 
@@ -75,12 +75,11 @@ spec:
         tier: control-plane
     spec:
       nodeSelector:
-        node-role.kubernetes.io/master: ""
+        node-role.kubernetes.io/control-plane: ""
       containers:
         - image: localhost:5000/scheduler-plugins/kube-scheduler:latest
           imagePullPolicy: Never
-          command:
-          - /bin/kube-scheduler
+          args:
           - --authentication-kubeconfig=/etc/kubernetes/scheduler.conf
           - --authorization-kubeconfig=/etc/kubernetes/scheduler.conf
           - --config=/etc/kubernetes/configs/scheduler-config.yaml

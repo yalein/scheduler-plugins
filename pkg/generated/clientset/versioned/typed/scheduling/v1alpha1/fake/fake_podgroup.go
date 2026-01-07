@@ -19,124 +19,33 @@ limitations under the License.
 package fake
 
 import (
-	"context"
-
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	labels "k8s.io/apimachinery/pkg/labels"
-	schema "k8s.io/apimachinery/pkg/runtime/schema"
-	types "k8s.io/apimachinery/pkg/types"
-	watch "k8s.io/apimachinery/pkg/watch"
-	testing "k8s.io/client-go/testing"
+	gentype "k8s.io/client-go/gentype"
 	v1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
+	schedulingv1alpha1 "sigs.k8s.io/scheduler-plugins/pkg/generated/applyconfiguration/scheduling/v1alpha1"
+	typedschedulingv1alpha1 "sigs.k8s.io/scheduler-plugins/pkg/generated/clientset/versioned/typed/scheduling/v1alpha1"
 )
 
-// FakePodGroups implements PodGroupInterface
-type FakePodGroups struct {
+// fakePodGroups implements PodGroupInterface
+type fakePodGroups struct {
+	*gentype.FakeClientWithListAndApply[*v1alpha1.PodGroup, *v1alpha1.PodGroupList, *schedulingv1alpha1.PodGroupApplyConfiguration]
 	Fake *FakeSchedulingV1alpha1
-	ns   string
 }
 
-var podgroupsResource = schema.GroupVersionResource{Group: "scheduling.x-k8s.io", Version: "v1alpha1", Resource: "podgroups"}
-
-var podgroupsKind = schema.GroupVersionKind{Group: "scheduling.x-k8s.io", Version: "v1alpha1", Kind: "PodGroup"}
-
-// Get takes name of the podGroup, and returns the corresponding podGroup object, and an error if there is any.
-func (c *FakePodGroups) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha1.PodGroup, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewGetAction(podgroupsResource, c.ns, name), &v1alpha1.PodGroup{})
-
-	if obj == nil {
-		return nil, err
+func newFakePodGroups(fake *FakeSchedulingV1alpha1, namespace string) typedschedulingv1alpha1.PodGroupInterface {
+	return &fakePodGroups{
+		gentype.NewFakeClientWithListAndApply[*v1alpha1.PodGroup, *v1alpha1.PodGroupList, *schedulingv1alpha1.PodGroupApplyConfiguration](
+			fake.Fake,
+			namespace,
+			v1alpha1.SchemeGroupVersion.WithResource("podgroups"),
+			v1alpha1.SchemeGroupVersion.WithKind("PodGroup"),
+			func() *v1alpha1.PodGroup { return &v1alpha1.PodGroup{} },
+			func() *v1alpha1.PodGroupList { return &v1alpha1.PodGroupList{} },
+			func(dst, src *v1alpha1.PodGroupList) { dst.ListMeta = src.ListMeta },
+			func(list *v1alpha1.PodGroupList) []*v1alpha1.PodGroup { return gentype.ToPointerSlice(list.Items) },
+			func(list *v1alpha1.PodGroupList, items []*v1alpha1.PodGroup) {
+				list.Items = gentype.FromPointerSlice(items)
+			},
+		),
+		fake,
 	}
-	return obj.(*v1alpha1.PodGroup), err
-}
-
-// List takes label and field selectors, and returns the list of PodGroups that match those selectors.
-func (c *FakePodGroups) List(ctx context.Context, opts v1.ListOptions) (result *v1alpha1.PodGroupList, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewListAction(podgroupsResource, podgroupsKind, c.ns, opts), &v1alpha1.PodGroupList{})
-
-	if obj == nil {
-		return nil, err
-	}
-
-	label, _, _ := testing.ExtractFromListOptions(opts)
-	if label == nil {
-		label = labels.Everything()
-	}
-	list := &v1alpha1.PodGroupList{ListMeta: obj.(*v1alpha1.PodGroupList).ListMeta}
-	for _, item := range obj.(*v1alpha1.PodGroupList).Items {
-		if label.Matches(labels.Set(item.Labels)) {
-			list.Items = append(list.Items, item)
-		}
-	}
-	return list, err
-}
-
-// Watch returns a watch.Interface that watches the requested podGroups.
-func (c *FakePodGroups) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
-	return c.Fake.
-		InvokesWatch(testing.NewWatchAction(podgroupsResource, c.ns, opts))
-
-}
-
-// Create takes the representation of a podGroup and creates it.  Returns the server's representation of the podGroup, and an error, if there is any.
-func (c *FakePodGroups) Create(ctx context.Context, podGroup *v1alpha1.PodGroup, opts v1.CreateOptions) (result *v1alpha1.PodGroup, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewCreateAction(podgroupsResource, c.ns, podGroup), &v1alpha1.PodGroup{})
-
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha1.PodGroup), err
-}
-
-// Update takes the representation of a podGroup and updates it. Returns the server's representation of the podGroup, and an error, if there is any.
-func (c *FakePodGroups) Update(ctx context.Context, podGroup *v1alpha1.PodGroup, opts v1.UpdateOptions) (result *v1alpha1.PodGroup, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewUpdateAction(podgroupsResource, c.ns, podGroup), &v1alpha1.PodGroup{})
-
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha1.PodGroup), err
-}
-
-// UpdateStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-func (c *FakePodGroups) UpdateStatus(ctx context.Context, podGroup *v1alpha1.PodGroup, opts v1.UpdateOptions) (*v1alpha1.PodGroup, error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewUpdateSubresourceAction(podgroupsResource, "status", c.ns, podGroup), &v1alpha1.PodGroup{})
-
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha1.PodGroup), err
-}
-
-// Delete takes name of the podGroup and deletes it. Returns an error if one occurs.
-func (c *FakePodGroups) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
-	_, err := c.Fake.
-		Invokes(testing.NewDeleteActionWithOptions(podgroupsResource, c.ns, name, opts), &v1alpha1.PodGroup{})
-
-	return err
-}
-
-// DeleteCollection deletes a collection of objects.
-func (c *FakePodGroups) DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error {
-	action := testing.NewDeleteCollectionAction(podgroupsResource, c.ns, listOpts)
-
-	_, err := c.Fake.Invokes(action, &v1alpha1.PodGroupList{})
-	return err
-}
-
-// Patch applies the patch and returns the patched podGroup.
-func (c *FakePodGroups) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha1.PodGroup, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceAction(podgroupsResource, c.ns, name, pt, data, subresources...), &v1alpha1.PodGroup{})
-
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha1.PodGroup), err
 }

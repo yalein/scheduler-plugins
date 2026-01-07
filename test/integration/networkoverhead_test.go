@@ -25,9 +25,12 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/kubernetes/pkg/scheduler"
 	schedapi "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	fwkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
@@ -37,27 +40,31 @@ import (
 	scheconfig "sigs.k8s.io/scheduler-plugins/apis/config"
 	"sigs.k8s.io/scheduler-plugins/pkg/networkaware/networkoverhead"
 	networkawareutil "sigs.k8s.io/scheduler-plugins/pkg/networkaware/util"
+	clientutil "sigs.k8s.io/scheduler-plugins/pkg/util"
 	"sigs.k8s.io/scheduler-plugins/test/util"
 
 	appgroupapi "github.com/diktyo-io/appgroup-api/pkg/apis/appgroup"
 	agv1alpha1 "github.com/diktyo-io/appgroup-api/pkg/apis/appgroup/v1alpha1"
-	agversioned "github.com/diktyo-io/appgroup-api/pkg/generated/clientset/versioned"
 	ntapi "github.com/diktyo-io/networktopology-api/pkg/apis/networktopology"
 	ntv1alpha1 "github.com/diktyo-io/networktopology-api/pkg/apis/networktopology/v1alpha1"
-	ntversioned "github.com/diktyo-io/networktopology-api/pkg/generated/clientset/versioned"
 )
 
 func TestNetworkOverheadPlugin(t *testing.T) {
 	testCtx := &testContext{}
 	testCtx.Ctx, testCtx.CancelFn = context.WithCancel(context.Background())
 
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(agv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(ntv1alpha1.AddToScheme(scheme))
+
+	client, _, err := clientutil.NewClientWithCachedReader(testCtx.Ctx, globalKubeConfig, scheme)
+
 	cs := kubernetes.NewForConfigOrDie(globalKubeConfig)
-	agextClient := agversioned.NewForConfigOrDie(globalKubeConfig)
-	ntextClient := ntversioned.NewForConfigOrDie(globalKubeConfig)
 	testCtx.ClientSet = cs
 	testCtx.KubeConfig = globalKubeConfig
 
-	if err := wait.Poll(100*time.Millisecond, 3*time.Second, func() (done bool, err error) {
+	if err := wait.PollUntilContextTimeout(testCtx.Ctx, 100*time.Millisecond, 3*time.Second, false, func(ctx context.Context) (done bool, err error) {
 		groupList, _, err := cs.ServerGroupsAndResources()
 		if err != nil {
 			return false, nil
@@ -73,7 +80,7 @@ func TestNetworkOverheadPlugin(t *testing.T) {
 		t.Fatalf("Timed out waiting for AppGroup CRD to be ready: %v", err)
 	}
 
-	if err := wait.Poll(100*time.Millisecond, 3*time.Second, func() (done bool, err error) {
+	if err := wait.PollUntilContextTimeout(testCtx.Ctx, 100*time.Millisecond, 3*time.Second, false, func(ctx context.Context) (done bool, err error) {
 		groupList, _, err := cs.ServerGroupsAndResources()
 		if err != nil {
 			return false, nil
@@ -173,8 +180,9 @@ func TestNetworkOverheadPlugin(t *testing.T) {
 			},
 		},
 	).Status(agv1alpha1.AppGroupStatus{
-		RunningWorkloads:  3,
-		ScheduleStartTime: metav1.Time{time.Now()}, TopologyCalculationTime: metav1.Time{time.Now()},
+		RunningWorkloads:        3,
+		ScheduleStartTime:       metav1.Now(),
+		TopologyCalculationTime: metav1.Now(),
 		TopologyOrder: agv1alpha1.AppGroupTopologyList{
 			agv1alpha1.AppGroupTopologyInfo{
 				Workload: agv1alpha1.AppGroupWorkloadInfo{Kind: "Deployment", Name: "p1", Selector: "p1", APIVersion: "apps/v1", Namespace: "default"}, Index: 1},
@@ -241,19 +249,19 @@ func TestNetworkOverheadPlugin(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Logf("Start NetworkOverhead integration test %v ...", tt.name)
-			defer cleanupAppGroups(testCtx.Ctx, agextClient, tt.appGroups)
-			defer cleanupNetworkTopologies(testCtx.Ctx, ntextClient, tt.networkTopologies)
+			defer cleanupAppGroups(testCtx.Ctx, client, tt.appGroups)
+			defer cleanupNetworkTopologies(testCtx.Ctx, client, tt.networkTopologies)
 			defer cleanupPods(t, testCtx, tt.pods)
 
 			// create AppGroup
 			t.Logf("Step 1 - Start by creating the basic appGroup...")
-			if err := createAppGroups(testCtx.Ctx, agextClient, tt.appGroups); err != nil {
+			if err := createAppGroups(testCtx.Ctx, client, tt.appGroups); err != nil {
 				t.Fatal(err)
 			}
 
 			// create NetworkTopology
 			t.Logf("Step 2 - create the nt CR...")
-			if err := createNetworkTopologies(testCtx.Ctx, ntextClient, tt.networkTopologies); err != nil {
+			if err := createNetworkTopologies(testCtx.Ctx, client, tt.networkTopologies); err != nil {
 				t.Fatal(err)
 			}
 
@@ -271,8 +279,8 @@ func TestNetworkOverheadPlugin(t *testing.T) {
 			for _, p := range tt.pods {
 				if len(tt.expectedNodes) > 0 {
 					// Wait for the pod to be scheduled.
-					if err := wait.Poll(1*time.Second, 20*time.Second, func() (bool, error) {
-						return podScheduled(cs, ns, p.Name), nil
+					if err := wait.PollUntilContextTimeout(testCtx.Ctx, 1*time.Second, 20*time.Second, false, func(ctx context.Context) (bool, error) {
+						return podScheduled(t, cs, ns, p.Name), nil
 
 					}); err != nil {
 						t.Errorf("pod %q to be scheduled, error: %v", p.Name, err)

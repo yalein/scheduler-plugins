@@ -29,6 +29,9 @@ import (
 // +kubebuilder:resource:shortName={eq,eqs}
 // +kubebuilder:subresource:status
 // +kubebuilder:metadata:annotations="api-approved.kubernetes.io=https://github.com/kubernetes-sigs/scheduler-plugins/pull/52"
+// +kubebuilder:printcolumn:name="Used",JSONPath=".status.used",type=string,description="Used is the current observed total usage of the resource in the namespace."
+// +kubebuilder:printcolumn:name="Max",JSONPath=".spec.max",type=string,description="Max is the set of desired max limits for each named resource."
+// +kubebuilder:printcolumn:name="Age",JSONPath=".metadata.creationTimestamp",type=date,description="Age is the time ElasticQuota was created."
 type ElasticQuota struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -91,15 +94,9 @@ const (
 	// PodGroupRunning means the `spec.minMember` pods of the pod group are in running phase.
 	PodGroupRunning PodGroupPhase = "Running"
 
-	// PodGroupPreScheduling means all pods of the pod group have enqueued and are waiting to be scheduled.
-	PodGroupPreScheduling PodGroupPhase = "PreScheduling"
-
-	// PodGroupScheduling means partial pods of the pod group have been scheduled and are in running phase
+	// PodGroupScheduling means the number of pods scheduled is bigger than `spec.minMember`
 	// but the number of running pods has not reached the `spec.minMember` pods of PodGroups.
 	PodGroupScheduling PodGroupPhase = "Scheduling"
-
-	// PodGroupScheduled means the `spec.minMember` pods of the pod group have been scheduled and are in running phase.
-	PodGroupScheduled PodGroupPhase = "Scheduled"
 
 	// PodGroupUnknown means a part of `spec.minMember` pods of the pod group have been scheduled but the others can not
 	// be scheduled due to, e.g. not enough resource; scheduler will wait for related controllers to recover them.
@@ -122,6 +119,12 @@ const (
 // +kubebuilder:resource:shortName={pg,pgs}
 // +kubebuilder:subresource:status
 // +kubebuilder:metadata:annotations="api-approved.kubernetes.io=https://github.com/kubernetes-sigs/scheduler-plugins/pull/50"
+// +kubebuilder:printcolumn:name="Phase",JSONPath=".status.phase",type=string,description="Current phase of PodGroup."
+// +kubebuilder:printcolumn:name="MinMember",JSONPath=".spec.minMember",type=integer,description="MinMember defines the minimal number of members/tasks to run the pod group."
+// +kubebuilder:printcolumn:name="Running",JSONPath=".status.running",type=integer,description="The number of actively running pods."
+// +kubebuilder:printcolumn:name="Succeeded",JSONPath=".status.succeeded",type=integer,description="The number of pods which reached phase Succeeded."
+// +kubebuilder:printcolumn:name="Failed",JSONPath=".status.failed",type=integer,description="The number of pods which reached phase Failed."
+// +kubebuilder:printcolumn:name="Age",JSONPath=".metadata.creationTimestamp",type=date,description="Age is the time PodGroup was created."
 type PodGroup struct {
 	metav1.TypeMeta `json:",inline"`
 	// Standard object's metadata.
@@ -142,12 +145,14 @@ type PodGroup struct {
 type PodGroupSpec struct {
 	// MinMember defines the minimal number of members/tasks to run the pod group;
 	// if there's not enough resources to start all tasks, the scheduler
-	// will not start anyone.
+	// will not start any.
+	// The minimum is 1
+	// +kubebuilder:validation:Minimum=1
 	MinMember int32 `json:"minMember,omitempty"`
 
 	// MinResources defines the minimal resource of members/tasks to run the pod group;
 	// if there's not enough resources to start all tasks, the scheduler
-	// will not start anyone.
+	// will not start any.
 	MinResources v1.ResourceList `json:"minResources,omitempty"`
 
 	// ScheduleTimeoutSeconds defines the maximal time of members/tasks to wait before run the pod group;
@@ -162,10 +167,6 @@ type PodGroupStatus struct {
 	// OccupiedBy marks the workload (e.g., deployment, statefulset) UID that occupy the podgroup.
 	// It is empty if not initialized.
 	OccupiedBy string `json:"occupiedBy,omitempty"`
-
-	// The number of actively running pods.
-	// +optional
-	Scheduled int32 `json:"scheduled,omitempty"`
 
 	// The number of actively running pods.
 	// +optional

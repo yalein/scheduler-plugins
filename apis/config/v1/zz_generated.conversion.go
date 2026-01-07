@@ -60,6 +60,16 @@ func RegisterConversions(s *runtime.Scheme) error {
 	}); err != nil {
 		return err
 	}
+	if err := s.AddGeneratedConversionFunc((*LowRiskOverCommitmentArgs)(nil), (*config.LowRiskOverCommitmentArgs)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1_LowRiskOverCommitmentArgs_To_config_LowRiskOverCommitmentArgs(a.(*LowRiskOverCommitmentArgs), b.(*config.LowRiskOverCommitmentArgs), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*config.LowRiskOverCommitmentArgs)(nil), (*LowRiskOverCommitmentArgs)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_LowRiskOverCommitmentArgs_To_v1_LowRiskOverCommitmentArgs(a.(*config.LowRiskOverCommitmentArgs), b.(*LowRiskOverCommitmentArgs), scope)
+	}); err != nil {
+		return err
+	}
 	if err := s.AddGeneratedConversionFunc((*MetricProviderSpec)(nil), (*config.MetricProviderSpec)(nil), func(a, b interface{}, scope conversion.Scope) error {
 		return Convert_v1_MetricProviderSpec_To_config_MetricProviderSpec(a.(*MetricProviderSpec), b.(*config.MetricProviderSpec), scope)
 	}); err != nil {
@@ -80,6 +90,16 @@ func RegisterConversions(s *runtime.Scheme) error {
 	}); err != nil {
 		return err
 	}
+	if err := s.AddGeneratedConversionFunc((*NodeResourceTopologyCache)(nil), (*config.NodeResourceTopologyCache)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1_NodeResourceTopologyCache_To_config_NodeResourceTopologyCache(a.(*NodeResourceTopologyCache), b.(*config.NodeResourceTopologyCache), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*config.NodeResourceTopologyCache)(nil), (*NodeResourceTopologyCache)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_NodeResourceTopologyCache_To_v1_NodeResourceTopologyCache(a.(*config.NodeResourceTopologyCache), b.(*NodeResourceTopologyCache), scope)
+	}); err != nil {
+		return err
+	}
 	if err := s.AddGeneratedConversionFunc((*NodeResourcesAllocatableArgs)(nil), (*config.NodeResourcesAllocatableArgs)(nil), func(a, b interface{}, scope conversion.Scope) error {
 		return Convert_v1_NodeResourcesAllocatableArgs_To_config_NodeResourcesAllocatableArgs(a.(*NodeResourcesAllocatableArgs), b.(*config.NodeResourcesAllocatableArgs), scope)
 	}); err != nil {
@@ -87,6 +107,26 @@ func RegisterConversions(s *runtime.Scheme) error {
 	}
 	if err := s.AddGeneratedConversionFunc((*config.NodeResourcesAllocatableArgs)(nil), (*NodeResourcesAllocatableArgs)(nil), func(a, b interface{}, scope conversion.Scope) error {
 		return Convert_config_NodeResourcesAllocatableArgs_To_v1_NodeResourcesAllocatableArgs(a.(*config.NodeResourcesAllocatableArgs), b.(*NodeResourcesAllocatableArgs), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*PeaksArgs)(nil), (*config.PeaksArgs)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1_PeaksArgs_To_config_PeaksArgs(a.(*PeaksArgs), b.(*config.PeaksArgs), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*config.PeaksArgs)(nil), (*PeaksArgs)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_PeaksArgs_To_v1_PeaksArgs(a.(*config.PeaksArgs), b.(*PeaksArgs), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*PowerModel)(nil), (*config.PowerModel)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1_PowerModel_To_config_PowerModel(a.(*PowerModel), b.(*config.PowerModel), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*config.PowerModel)(nil), (*PowerModel)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_PowerModel_To_v1_PowerModel(a.(*config.PowerModel), b.(*PowerModel), scope)
 	}); err != nil {
 		return err
 	}
@@ -107,6 +147,16 @@ func RegisterConversions(s *runtime.Scheme) error {
 	}
 	if err := s.AddGeneratedConversionFunc((*config.ScoringStrategy)(nil), (*ScoringStrategy)(nil), func(a, b interface{}, scope conversion.Scope) error {
 		return Convert_config_ScoringStrategy_To_v1_ScoringStrategy(a.(*config.ScoringStrategy), b.(*ScoringStrategy), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*SySchedArgs)(nil), (*config.SySchedArgs)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1_SySchedArgs_To_config_SySchedArgs(a.(*SySchedArgs), b.(*config.SySchedArgs), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*config.SySchedArgs)(nil), (*SySchedArgs)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_SySchedArgs_To_v1_SySchedArgs(a.(*config.SySchedArgs), b.(*SySchedArgs), scope)
 	}); err != nil {
 		return err
 	}
@@ -157,6 +207,9 @@ func autoConvert_v1_CoschedulingArgs_To_config_CoschedulingArgs(in *Coscheduling
 	if err := metav1.Convert_Pointer_int64_To_int64(&in.PermitWaitingTimeSeconds, &out.PermitWaitingTimeSeconds, s); err != nil {
 		return err
 	}
+	if err := metav1.Convert_Pointer_int64_To_int64(&in.PodGroupBackoffSeconds, &out.PodGroupBackoffSeconds, s); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -167,6 +220,9 @@ func Convert_v1_CoschedulingArgs_To_config_CoschedulingArgs(in *CoschedulingArgs
 
 func autoConvert_config_CoschedulingArgs_To_v1_CoschedulingArgs(in *config.CoschedulingArgs, out *CoschedulingArgs, s conversion.Scope) error {
 	if err := metav1.Convert_int64_To_Pointer_int64(&in.PermitWaitingTimeSeconds, &out.PermitWaitingTimeSeconds, s); err != nil {
+		return err
+	}
+	if err := metav1.Convert_int64_To_Pointer_int64(&in.PodGroupBackoffSeconds, &out.PodGroupBackoffSeconds, s); err != nil {
 		return err
 	}
 	return nil
@@ -211,6 +267,38 @@ func autoConvert_config_LoadVariationRiskBalancingArgs_To_v1_LoadVariationRiskBa
 // Convert_config_LoadVariationRiskBalancingArgs_To_v1_LoadVariationRiskBalancingArgs is an autogenerated conversion function.
 func Convert_config_LoadVariationRiskBalancingArgs_To_v1_LoadVariationRiskBalancingArgs(in *config.LoadVariationRiskBalancingArgs, out *LoadVariationRiskBalancingArgs, s conversion.Scope) error {
 	return autoConvert_config_LoadVariationRiskBalancingArgs_To_v1_LoadVariationRiskBalancingArgs(in, out, s)
+}
+
+func autoConvert_v1_LowRiskOverCommitmentArgs_To_config_LowRiskOverCommitmentArgs(in *LowRiskOverCommitmentArgs, out *config.LowRiskOverCommitmentArgs, s conversion.Scope) error {
+	if err := Convert_v1_TrimaranSpec_To_config_TrimaranSpec(&in.TrimaranSpec, &out.TrimaranSpec, s); err != nil {
+		return err
+	}
+	if err := metav1.Convert_Pointer_int64_To_int64(&in.SmoothingWindowSize, &out.SmoothingWindowSize, s); err != nil {
+		return err
+	}
+	out.RiskLimitWeights = *(*map[corev1.ResourceName]float64)(unsafe.Pointer(&in.RiskLimitWeights))
+	return nil
+}
+
+// Convert_v1_LowRiskOverCommitmentArgs_To_config_LowRiskOverCommitmentArgs is an autogenerated conversion function.
+func Convert_v1_LowRiskOverCommitmentArgs_To_config_LowRiskOverCommitmentArgs(in *LowRiskOverCommitmentArgs, out *config.LowRiskOverCommitmentArgs, s conversion.Scope) error {
+	return autoConvert_v1_LowRiskOverCommitmentArgs_To_config_LowRiskOverCommitmentArgs(in, out, s)
+}
+
+func autoConvert_config_LowRiskOverCommitmentArgs_To_v1_LowRiskOverCommitmentArgs(in *config.LowRiskOverCommitmentArgs, out *LowRiskOverCommitmentArgs, s conversion.Scope) error {
+	if err := Convert_config_TrimaranSpec_To_v1_TrimaranSpec(&in.TrimaranSpec, &out.TrimaranSpec, s); err != nil {
+		return err
+	}
+	if err := metav1.Convert_int64_To_Pointer_int64(&in.SmoothingWindowSize, &out.SmoothingWindowSize, s); err != nil {
+		return err
+	}
+	out.RiskLimitWeights = *(*map[corev1.ResourceName]float64)(unsafe.Pointer(&in.RiskLimitWeights))
+	return nil
+}
+
+// Convert_config_LowRiskOverCommitmentArgs_To_v1_LowRiskOverCommitmentArgs is an autogenerated conversion function.
+func Convert_config_LowRiskOverCommitmentArgs_To_v1_LowRiskOverCommitmentArgs(in *config.LowRiskOverCommitmentArgs, out *LowRiskOverCommitmentArgs, s conversion.Scope) error {
+	return autoConvert_config_LowRiskOverCommitmentArgs_To_v1_LowRiskOverCommitmentArgs(in, out, s)
 }
 
 func autoConvert_v1_MetricProviderSpec_To_config_MetricProviderSpec(in *MetricProviderSpec, out *config.MetricProviderSpec, s conversion.Scope) error {
@@ -283,12 +371,39 @@ func Convert_config_NetworkOverheadArgs_To_v1_NetworkOverheadArgs(in *config.Net
 	return autoConvert_config_NetworkOverheadArgs_To_v1_NetworkOverheadArgs(in, out, s)
 }
 
+func autoConvert_v1_NodeResourceTopologyCache_To_config_NodeResourceTopologyCache(in *NodeResourceTopologyCache, out *config.NodeResourceTopologyCache, s conversion.Scope) error {
+	out.ForeignPodsDetect = (*config.ForeignPodsDetectMode)(unsafe.Pointer(in.ForeignPodsDetect))
+	out.ResyncMethod = (*config.CacheResyncMethod)(unsafe.Pointer(in.ResyncMethod))
+	out.InformerMode = (*config.CacheInformerMode)(unsafe.Pointer(in.InformerMode))
+	out.ResyncScope = (*config.CacheResyncScope)(unsafe.Pointer(in.ResyncScope))
+	return nil
+}
+
+// Convert_v1_NodeResourceTopologyCache_To_config_NodeResourceTopologyCache is an autogenerated conversion function.
+func Convert_v1_NodeResourceTopologyCache_To_config_NodeResourceTopologyCache(in *NodeResourceTopologyCache, out *config.NodeResourceTopologyCache, s conversion.Scope) error {
+	return autoConvert_v1_NodeResourceTopologyCache_To_config_NodeResourceTopologyCache(in, out, s)
+}
+
+func autoConvert_config_NodeResourceTopologyCache_To_v1_NodeResourceTopologyCache(in *config.NodeResourceTopologyCache, out *NodeResourceTopologyCache, s conversion.Scope) error {
+	out.ForeignPodsDetect = (*ForeignPodsDetectMode)(unsafe.Pointer(in.ForeignPodsDetect))
+	out.ResyncMethod = (*CacheResyncMethod)(unsafe.Pointer(in.ResyncMethod))
+	out.InformerMode = (*CacheInformerMode)(unsafe.Pointer(in.InformerMode))
+	out.ResyncScope = (*CacheResyncScope)(unsafe.Pointer(in.ResyncScope))
+	return nil
+}
+
+// Convert_config_NodeResourceTopologyCache_To_v1_NodeResourceTopologyCache is an autogenerated conversion function.
+func Convert_config_NodeResourceTopologyCache_To_v1_NodeResourceTopologyCache(in *config.NodeResourceTopologyCache, out *NodeResourceTopologyCache, s conversion.Scope) error {
+	return autoConvert_config_NodeResourceTopologyCache_To_v1_NodeResourceTopologyCache(in, out, s)
+}
+
 func autoConvert_v1_NodeResourceTopologyMatchArgs_To_config_NodeResourceTopologyMatchArgs(in *NodeResourceTopologyMatchArgs, out *config.NodeResourceTopologyMatchArgs, s conversion.Scope) error {
 	// WARNING: in.ScoringStrategy requires manual conversion: inconvertible types (*sigs.k8s.io/scheduler-plugins/apis/config/v1.ScoringStrategy vs sigs.k8s.io/scheduler-plugins/apis/config.ScoringStrategy)
 	if err := metav1.Convert_Pointer_int64_To_int64(&in.CacheResyncPeriodSeconds, &out.CacheResyncPeriodSeconds, s); err != nil {
 		return err
 	}
 	out.DiscardReservedNodes = in.DiscardReservedNodes
+	out.Cache = (*config.NodeResourceTopologyCache)(unsafe.Pointer(in.Cache))
 	return nil
 }
 
@@ -298,6 +413,7 @@ func autoConvert_config_NodeResourceTopologyMatchArgs_To_v1_NodeResourceTopology
 		return err
 	}
 	out.DiscardReservedNodes = in.DiscardReservedNodes
+	out.Cache = (*NodeResourceTopologyCache)(unsafe.Pointer(in.Cache))
 	return nil
 }
 
@@ -321,6 +437,52 @@ func autoConvert_config_NodeResourcesAllocatableArgs_To_v1_NodeResourcesAllocata
 // Convert_config_NodeResourcesAllocatableArgs_To_v1_NodeResourcesAllocatableArgs is an autogenerated conversion function.
 func Convert_config_NodeResourcesAllocatableArgs_To_v1_NodeResourcesAllocatableArgs(in *config.NodeResourcesAllocatableArgs, out *NodeResourcesAllocatableArgs, s conversion.Scope) error {
 	return autoConvert_config_NodeResourcesAllocatableArgs_To_v1_NodeResourcesAllocatableArgs(in, out, s)
+}
+
+func autoConvert_v1_PeaksArgs_To_config_PeaksArgs(in *PeaksArgs, out *config.PeaksArgs, s conversion.Scope) error {
+	out.WatcherAddress = in.WatcherAddress
+	out.NodePowerModel = *(*map[string]config.PowerModel)(unsafe.Pointer(&in.NodePowerModel))
+	return nil
+}
+
+// Convert_v1_PeaksArgs_To_config_PeaksArgs is an autogenerated conversion function.
+func Convert_v1_PeaksArgs_To_config_PeaksArgs(in *PeaksArgs, out *config.PeaksArgs, s conversion.Scope) error {
+	return autoConvert_v1_PeaksArgs_To_config_PeaksArgs(in, out, s)
+}
+
+func autoConvert_config_PeaksArgs_To_v1_PeaksArgs(in *config.PeaksArgs, out *PeaksArgs, s conversion.Scope) error {
+	out.WatcherAddress = in.WatcherAddress
+	out.NodePowerModel = *(*map[string]PowerModel)(unsafe.Pointer(&in.NodePowerModel))
+	return nil
+}
+
+// Convert_config_PeaksArgs_To_v1_PeaksArgs is an autogenerated conversion function.
+func Convert_config_PeaksArgs_To_v1_PeaksArgs(in *config.PeaksArgs, out *PeaksArgs, s conversion.Scope) error {
+	return autoConvert_config_PeaksArgs_To_v1_PeaksArgs(in, out, s)
+}
+
+func autoConvert_v1_PowerModel_To_config_PowerModel(in *PowerModel, out *config.PowerModel, s conversion.Scope) error {
+	out.K0 = in.K0
+	out.K1 = in.K1
+	out.K2 = in.K2
+	return nil
+}
+
+// Convert_v1_PowerModel_To_config_PowerModel is an autogenerated conversion function.
+func Convert_v1_PowerModel_To_config_PowerModel(in *PowerModel, out *config.PowerModel, s conversion.Scope) error {
+	return autoConvert_v1_PowerModel_To_config_PowerModel(in, out, s)
+}
+
+func autoConvert_config_PowerModel_To_v1_PowerModel(in *config.PowerModel, out *PowerModel, s conversion.Scope) error {
+	out.K0 = in.K0
+	out.K1 = in.K1
+	out.K2 = in.K2
+	return nil
+}
+
+// Convert_config_PowerModel_To_v1_PowerModel is an autogenerated conversion function.
+func Convert_config_PowerModel_To_v1_PowerModel(in *config.PowerModel, out *PowerModel, s conversion.Scope) error {
+	return autoConvert_config_PowerModel_To_v1_PowerModel(in, out, s)
 }
 
 func autoConvert_v1_PreemptionTolerationArgs_To_config_PreemptionTolerationArgs(in *PreemptionTolerationArgs, out *config.PreemptionTolerationArgs, s conversion.Scope) error {
@@ -373,6 +535,36 @@ func autoConvert_config_ScoringStrategy_To_v1_ScoringStrategy(in *config.Scoring
 // Convert_config_ScoringStrategy_To_v1_ScoringStrategy is an autogenerated conversion function.
 func Convert_config_ScoringStrategy_To_v1_ScoringStrategy(in *config.ScoringStrategy, out *ScoringStrategy, s conversion.Scope) error {
 	return autoConvert_config_ScoringStrategy_To_v1_ScoringStrategy(in, out, s)
+}
+
+func autoConvert_v1_SySchedArgs_To_config_SySchedArgs(in *SySchedArgs, out *config.SySchedArgs, s conversion.Scope) error {
+	if err := metav1.Convert_Pointer_string_To_string(&in.DefaultProfileNamespace, &out.DefaultProfileNamespace, s); err != nil {
+		return err
+	}
+	if err := metav1.Convert_Pointer_string_To_string(&in.DefaultProfileName, &out.DefaultProfileName, s); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Convert_v1_SySchedArgs_To_config_SySchedArgs is an autogenerated conversion function.
+func Convert_v1_SySchedArgs_To_config_SySchedArgs(in *SySchedArgs, out *config.SySchedArgs, s conversion.Scope) error {
+	return autoConvert_v1_SySchedArgs_To_config_SySchedArgs(in, out, s)
+}
+
+func autoConvert_config_SySchedArgs_To_v1_SySchedArgs(in *config.SySchedArgs, out *SySchedArgs, s conversion.Scope) error {
+	if err := metav1.Convert_string_To_Pointer_string(&in.DefaultProfileNamespace, &out.DefaultProfileNamespace, s); err != nil {
+		return err
+	}
+	if err := metav1.Convert_string_To_Pointer_string(&in.DefaultProfileName, &out.DefaultProfileName, s); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Convert_config_SySchedArgs_To_v1_SySchedArgs is an autogenerated conversion function.
+func Convert_config_SySchedArgs_To_v1_SySchedArgs(in *config.SySchedArgs, out *SySchedArgs, s conversion.Scope) error {
+	return autoConvert_config_SySchedArgs_To_v1_SySchedArgs(in, out, s)
 }
 
 func autoConvert_v1_TargetLoadPackingArgs_To_config_TargetLoadPackingArgs(in *TargetLoadPackingArgs, out *config.TargetLoadPackingArgs, s conversion.Scope) error {
